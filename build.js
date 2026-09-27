@@ -200,6 +200,7 @@ out = out.replace('__REPORT_DATA__', () => json); // 函数式: 防 JSON 内容�
 
 // 顺带产出最新一期简报文件（便于外部使用/归档）
 const lastDate = Object.keys(briefs).sort().pop();
+if (!fs.existsSync(path.join(__dirname, 'dist'))) fs.mkdirSync(path.join(__dirname, 'dist'), { recursive: true }); // 云端冷启动 dist 不存在（本机总有历史产物故从未暴露）
 fs.writeFileSync(path.join(__dirname, 'dist', 'brief-latest.txt'), briefs[lastDate] + '\n');
 console.log('简报生成:', Object.keys(briefs).length, '期 · 最新', lastDate, '→ dist/brief-latest.txt');
 console.log('行业 5 日动量:', momN, '个板块参与（top/bottom 8 注入 signals.industry）');

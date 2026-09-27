@@ -522,8 +522,8 @@ async function backfill() {
   // ── 构建 + 发布目录 ──
   console.log('重建 dist…');
   execSync('node build.js', { cwd: __dirname, stdio: 'inherit' });
-  fs.copyFileSync(path.join(__dirname, 'dist', 'index.html'), TASK_PUBLIC);
-  fs.copyFileSync(path.join(__dirname, 'dist', 'index.html'), path.join(PUB_DIR, 'index.html'));
+  if (fs.existsSync(path.dirname(TASK_PUBLIC))) fs.copyFileSync(path.join(__dirname, 'dist', 'index.html'), TASK_PUBLIC); // 云端无 task-manager 目录则跳过
+  if (fs.existsSync(PUB_DIR)) fs.copyFileSync(path.join(__dirname, 'dist', 'index.html'), path.join(PUB_DIR, 'index.html')); // build.js 已建目录，守卫兜底
   console.log('已同步: task-manager/public/sentiment.html + 独立发布目录');
   console.log('\n══ ' + apiDate + ' 入档完成 · 存档 ' + D.all_days.length + ' 个交易日 ══');
   console.log('（发布: 用 sites 工具重发 task-manager 目录即可上线）');
