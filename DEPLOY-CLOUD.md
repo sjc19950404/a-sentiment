@@ -51,6 +51,7 @@ git push -u origin main
 | 场景 | 处理 |
 |------|------|
 | 正常运转 | 无需任何操作：交易日 18:30（±半小时延迟）自动更新 Pages |
+| 法定节假日 | 幂等门控自动跳过构建与发布（日志里「幂等门控」步骤判 updated=false），零空转 |
 | 失败通知 | GitHub 默认邮件通知仓库所有者（Actions 红叉） |
 | 某天失败/漏跑 | Actions 页面手动 Run workflow 补跑（管道幂等，重复跑安全） |
 | 缺口补数据 | 30 天内缺口 `node fetch-daily.js --backfill` 可补池/额并全档重算（本机跑后 push，或未来把它也做成 workflow input） |

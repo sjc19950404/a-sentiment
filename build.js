@@ -195,7 +195,21 @@ out = out.replace('</script>\n</body>', () => (`
 // 注入数据（保持 JSON 安全转义 </script）
 const momN = addIndustryMomentum(DATA);
 const briefs = addBriefs(DATA);
-const json = JSON.stringify(DATA).replace(/<\//g, '<\\/');
+// ── 页面滑动窗口（仅裁剪注入页面的副本；仓库 data.json 永远全量，真备份=git 历史）──
+const PAGE_WINDOW = parseInt(process.env.SENT_PAGE_WINDOW || '250', 10);
+let pageData = DATA;
+if (PAGE_WINDOW > 0 && Array.isArray(DATA.all_days) && DATA.all_days.length > PAGE_WINDOW) {
+  const keepSet = new Set(DATA.all_days.slice(-PAGE_WINDOW).map(d => d.trade_date));
+  pageData = {
+    ...DATA,
+    all_days: DATA.all_days.slice(-PAGE_WINDOW),
+    board_rank: Object.fromEntries(Object.entries(DATA.board_rank || {}).filter(([dt]) => keepSet.has(dt))),
+    stocks: Object.fromEntries(Object.entries(DATA.stocks || {}).map(([code, st]) => [code, Object.assign({}, st, { closes: (st.closes || []).filter(pair => keepSet.has(pair[0])) })]))
+  };
+  pageData.meta = Object.assign({}, DATA.meta, { pageWindowDays: PAGE_WINDOW, pageWindowNote: '页面仅注入最近 ' + PAGE_WINDOW + ' 个交易日；全档数据永远留存于仓库 data.json' });
+  console.log('页面滑动窗口: 注入最近', PAGE_WINDOW, '个交易日（全档', DATA.all_days.length, '天留存于 data.json）');
+}
+const json = JSON.stringify(pageData).replace(/<\//g, '<\\/');
 out = out.replace('__REPORT_DATA__', () => json); // 函数式: 防 JSON 内容含 $ 特殊模式（$&/$$）破坏输出
 
 // 顺带产出最新一期简报文件（便于外部使用/归档）

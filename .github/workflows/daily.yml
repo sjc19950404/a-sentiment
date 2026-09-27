@@ -30,12 +30,25 @@ jobs:
           node-version: '22'
 
       - name: 每日抓取入档（非交易日 / 已在档自动幂等退出）
-        run: node fetch-daily.js
+        run: |
+          node fetch-daily.js 2>&1 | tee /tmp/fetch.log
+          exit ${PIPESTATUS[0]}
+
+      - name: 幂等门控（假日 / 已入档 → 跳过构建与发布，不空转）
+        id: gate
+        run: |
+          if grep -qE "已在存档|无新交易日" /tmp/fetch.log; then
+            echo "updated=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "updated=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: 重建产物
+        if: steps.gate.outputs.updated == 'true'
         run: node build.js
 
       - name: 提交 data.json 回仓库（数据持久化，永不丢失）
+        if: steps.gate.outputs.updated == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -43,12 +56,15 @@ jobs:
           git diff --cached --quiet || (git commit -m "pipeline: $(date +'%F') 数据更新" && git push)
 
       - name: 配置 Pages
+        if: steps.gate.outputs.updated == 'true'
         uses: actions/configure-pages@v5
 
       - name: 上传产物
+        if: steps.gate.outputs.updated == 'true'
         uses: actions/upload-pages-artifact@v3
         with:
           path: dist
 
       - name: 发布到 GitHub Pages
+        if: steps.gate.outputs.updated == 'true'
         uses: actions/deploy-pages@v4
