@@ -1,0 +1,5 @@
+# 构建产物（Actions 每日重建，经 artifact 发布到 Pages）
+dist/
+# 每日抓取前的滚动备份（体积大且历史价值低，真备份是 git 历史本身）
+data.backup-pre-daily.json
+node_modules/

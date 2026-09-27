@@ -1,0 +1,54 @@
+name: daily-pipeline
+
+on:
+  schedule:
+    # UTC 10:30 = 北京时间 18:30（周一至五）；GitHub 定时触发可能有数分钟~半小时延迟
+    - cron: '30 10 * * 1-5'
+  workflow_dispatch: {}   # 手动首跑 / 补跑入口（Actions 页面右上角 Run workflow）
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: daily-pipeline
+  cancel-in-progress: false
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TZ: Asia/Shanghai          # 进程时区对齐北京
+      SENT_SITE_DIR: /tmp/sent-site   # 绕开 Windows 硬编码发布目录（Linux 无 C:\）
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 每日抓取入档（非交易日 / 已在档自动幂等退出）
+        run: node fetch-daily.js
+
+      - name: 重建产物
+        run: node build.js
+
+      - name: 提交 data.json 回仓库（数据持久化，永不丢失）
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || (git commit -m "pipeline: $(date +'%F') 数据更新" && git push)
+
+      - name: 配置 Pages
+        uses: actions/configure-pages@v5
+
+      - name: 上传产物
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+      - name: 发布到 GitHub Pages
+        uses: actions/deploy-pages@v4

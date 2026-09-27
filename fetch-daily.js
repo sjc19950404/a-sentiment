@@ -1,0 +1,530 @@
+// fetch-daily.js — 每日数据管道 v4.4：抓取 → 组装 → 追加存档 → 重算情绪 → 重建 → 发布目录
+// 数据源（全部已于 2026-09-27 对齐验证）:
+//   1. 东财龙虎榜 datacenter-web.eastmoney.com RPT_DAILYBILLBOARD_DETAILSNEW（81 条全对齐, 元→万 ÷1e4）
+//   2. 同花顺强势股 zx.10jqka.com.cn/event/api/getharden（51/51 全对齐, reason=题材"+"串）
+//   3. 同花顺行业指数 881xxx 日K（fetch-industry/fetch-board-year 同源, 90 板块）
+//   4. 腾讯指数 qt.gtimg.cn（indexes 三大指数涨跌幅）
+//   5. 东财涨停/炸板/跌停池 push2ex getTopic{ZT,ZB,DT}Pool（须带 sort 与 date=YYYYMMDD; 历史保留约3周; ZT池 lbc=连板数, DT池 fba=封单金额/amount=成交额/days=连续跌停）
+//   6. 同花顺大盘日K zs_1A0001(沪)+zs_399001(深) 第7列=成交额(元) → 两市总额（全年可回填）
+// v4.4 新增字段（2026-09-27）: summary.zt_lb{代码→连板数}; hs_lb3_count=昨日连板≥3高位股家数;
+//   hs_dt_count/hs_dt_fund/hs_dt_amt=高位股今日跌停家数/封单合计亿/成交额合计亿（区分良性换手 vs 高位崩盘; 相邻两日池齐全才可算, 池保留约3周）
+// 情绪公式 v4.3 七因子（2026-09-27 起; 旧 4 因子 35/25/25/15 已退役）:
+//   s_net=clamp(净买亿*2+50,0,100)  [权20]   s_pos=净买家数比%  [权10]
+//   s_brd=上涨板块占比%  [权20]              s_hot=clamp((只数-20)/60*100,0,100)  [权10]
+//   s_zdt=clamp((涨停+2)/(涨停+跌停+4)*100,0,100)  [权15]
+//   s_zbl=clamp(100-炸板率%*2,0,100), 炸板率=炸板/(炸板+收盘涨停)*100  [权10]
+//   s_amt=clamp(两市额/前20日均额*50,0,100)  [权15]
+//   value=(s_net*20+s_pos*10+s_brd*20+s_hot*10+s_zdt*15+s_zbl*10+s_amt*15)/100
+//   pct_rank = rank(value)/(n-1)*100（全档重算）
+//   缺维容错: 池数据超保留深度或额缺失时对应 s 用中性 50 补位（summary 记 _missing）
+// 用法:
+//   node fetch-daily.js            — 抓最近交易日并追加（幂等: 已在存档则退出）
+//   node fetch-daily.js --dry      — 只抓取与组装, 不写入不构建
+//   node fetch-daily.js --check=YYYY-MM-DD — 抓指定日与存档 diff（对齐验证 + 新公式重算对照）
+//   node fetch-daily.js --backfill — v4.3 一次性: 30 天存档回填池/额并全档重算（详见 backfill 分支）
+const fs = require('fs');
+const path = require('path');
+const { execSync } = require('child_process');
+
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154.0.0.0 Safari/537.36';
+const DATA_FILE = path.join(__dirname, 'data.json');
+const PUB_DIR = process.env.SENT_SITE_DIR || 'C:\\Users\\Administrator\\WorkBuddy\\sentiment-dashboard-site';
+const TASK_PUBLIC = path.join(__dirname, '..', 'task-manager', 'public', 'sentiment.html');
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const args = process.argv.slice(2);
+const DRY = args.includes('--dry');
+const BACKFILL = args.includes('--backfill');
+const CHECK = (args.find(a => a.startsWith('--check=')) || '').split('=')[1];
+
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const r2 = v => Math.round(v * 100) / 100;
+const r1 = v => Math.round(v * 10) / 10;
+
+// ── 源1: 同花顺强势股（兼交易日探测: data[0].date 即最近交易日）──
+async function fetchHot() {
+  for (let att = 0; att < 3; att++) {
+    try {
+      const r = await fetch('https://zx.10jqka.com.cn/event/api/getharden', { headers: { 'User-Agent': UA, Referer: 'https://zx.10jqka.com.cn/' } });
+      const j = await r.json();
+      if (j.errocode === 0 && Array.isArray(j.data) && j.data.length) return j.data;
+    } catch (e) { await sleep(800); }
+  }
+  throw new Error('getharden 强势股接口连续失败');
+}
+
+// ── 源2: 东财龙虎榜（分页全量）──
+async function fetchLhb(date) {
+  const out = []; let page = 1;
+  while (page <= 5) {
+    const url = 'https://datacenter-web.eastmoney.com/api/data/v1/get?pageSize=200&pageNumber=' + page +
+      '&reportName=RPT_DAILYBILLBOARD_DETAILSNEW&columns=ALL&filter=(TRADE_DATE%3D%27' + date + '%27)';
+    const r = await fetch(url, { headers: { 'User-Agent': UA, Referer: 'https://data.eastmoney.com/' } });
+    const j = await r.json();
+    if (!j.success || !j.result) throw new Error('龙虎榜接口失败: ' + (j.message || 'empty'));
+    out.push(...j.result.data);
+    if (out.length >= j.result.count) break;
+    page++; await sleep(300);
+  }
+  return out;
+}
+
+// ── 源3: 881xxx 行业日K（当日涨跌幅; 复用 fetch-board-year 逻辑）──
+async function fetchBoards(date) {
+  const listRes = await fetch('https://q.10jqka.com.cn/thshy/', { headers: { 'User-Agent': UA } });
+  const html = new TextDecoder('gbk').decode(await listRes.arrayBuffer());
+  const re = /thshy\/detail\/code\/(88\d{4})\/" target="_blank">([^<]+)</g;
+  let m; const boards = []; const seen = new Set();
+  while ((m = re.exec(html))) if (!seen.has(m[1])) { seen.add(m[1]); boards.push({ code: m[1], name: m[2].trim() }); }
+  if (boards.length < 50) throw new Error('板块列表异常: ' + boards.length);
+  const ymdNum = date.replace(/-/g, '');
+  const year = date.slice(0, 4);
+  const rows = []; let fail = 0;
+  for (let i = 0; i < boards.length; i++) {
+    const { code, name } = boards[i];
+    let got = null;
+    for (let att = 0; att < 2 && !got; att++) {
+      try {
+        const r = await fetch('http://d.10jqka.com.cn/v6/line/48_' + code + '/01/' + year + '.js', { headers: { 'User-Agent': UA, Referer: 'https://q.10jqka.com.cn/' } });
+        const t = await r.text();
+        const s = t.slice(t.indexOf('(') + 1, t.lastIndexOf(')'));
+        const obj = JSON.parse(s);
+        const ks = (obj.data || '').split(';').filter(Boolean).map(l => l.split(','));
+        const idx = ks.findIndex(k => k[0] === ymdNum);
+        if (idx > 0) got = { close: +ks[idx][4], pre: +ks[idx - 1][4] };
+        else if (idx === 0) got = null; // 年首无前收, 跳过
+      } catch (e) { await sleep(500); }
+    }
+    if (got && got.close && got.pre) rows.push({ name, change_pct: r2((got.close / got.pre - 1) * 100) });
+    else { fail++; }
+    await sleep(110);
+  }
+  if (rows.length < 50) throw new Error('行业日K 成功过少: ' + rows.length + '/' + boards.length + '（失败 ' + fail + '）');
+  return rows.sort((a, b) => b.change_pct - a.change_pct);
+}
+
+// ── 源4: 腾讯三大指数（当日涨跌幅）──
+async function fetchIndexes(date) {
+  try {
+    const r = await fetch('https://qt.gtimg.cn/q=sh000001,sz399001,sz399006', { headers: { 'User-Agent': UA } });
+    const txt = new TextDecoder('gbk').decode(await r.arrayBuffer());
+    const idx = {}; let ok = false;
+    for (const m of txt.matchAll(/v_(sh|sz)\d+="([^"]*)"/g)) {
+      const f = m[2].split('~');
+      const name = f[1], dateField = (f[30] || '').replace(/\//g, '-'); // YY/MM/DD → 不匹配即跳过
+      const ymdNum = (f[30] || '').replace(/\D/g, '');
+      const ymd = ymdNum.length === 8 ? ymdNum.slice(0, 4) + '-' + ymdNum.slice(4, 6) + '-' + ymdNum.slice(6) : '';
+      if (!ymd || ymd !== date) continue; // 非当日（盘前/异常）不写入
+      const chg = parseFloat(f[32]);
+      if (!isNaN(chg)) { idx[name] = r2(chg); ok = true; }
+    }
+    return ok ? idx : null;
+  } catch (e) { return null; }
+}
+
+// ── 源5: 东财涨停/炸板/跌停池（须带 sort; date 支持历史但保留约 3 周）──
+async function fetchPools(date) {
+  const ymd = date.replace(/-/g, '');
+  const base = 'ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wz.ztzt&Pageindex=0&pagesize=500';
+  const apis = [
+    ['getTopicZTPool', 'zt', 'fbt%3Aasc'],
+    ['getTopicZBPool', 'zb', 'fbt%3Aasc'],
+    ['getTopicDTPool', 'dt', 'fund%3Aasc']
+  ];
+  const out = { zt: null, zb: null, dt: null, max_lb: null, lb2: null, zt_codes: null, zt_lb: null, dt_detail: null };
+  let any = false;
+  for (const [api, key, sort] of apis) {
+    try {
+      const r = await fetch('https://push2ex.eastmoney.com/' + api + '?' + base + '&sort=' + sort + '&date=' + ymd,
+        { headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' } });
+      const j = await r.json();
+      const pool = j && j.data && Array.isArray(j.data.pool) ? j.data.pool : null;
+      if (pool && pool.length) { out[key] = pool.length; any = true; }
+      else out[key] = (pool ? 0 : null);
+      if (api === 'getTopicZTPool' && pool && pool.length) {
+        out.max_lb = Math.max(...pool.map(p => p.lbc || 1));
+        out.lb2 = pool.filter(p => (p.lbc || 1) >= 2).length;
+        out.zt_codes = pool.map(p => p.c); // 涨停成员入档（断板统计基础）
+        out.zt_lb = {}; pool.forEach(p => { out.zt_lb[p.c] = p.lbc || 1; }); // 代码→连板数映射（v4.4 高位股判定基础）
+      }
+      if (api === 'getTopicDTPool' && pool) {
+        out.dt_detail = pool.map(p => ({ c: p.c, fba: p.fba || 0, amount: p.amount || 0, days: p.days || 0 })); // fba=封单金额(元)·amount=成交额(元)·days=连续跌停
+      }
+      if (api === 'getTopicZBPool' && pool) {
+        out.zb_detail = pool.map(p => ({ c: p.c, amount: p.amount || 0 })); // v4.5 炸板金额基础（成交额元）
+      }
+    } catch (e) { /* 单池失败保持 null */ }
+    await sleep(400);
+  }
+  return any ? out : null; // 全空 = 超保留深度
+}
+
+// ── 源7: 同花顺昨日涨停指数 883994（打板赚钱效应: 当日涨跌幅=昨日涨停组合今日表现）──
+async function fetchYztMap() {
+  const map = {}; // ymdNum → 当日涨跌幅%（close/preClose−1）
+  const closes = {}; // ymdNum → close（跨年 preClose 用）
+  const years = [2025, 2026];
+  const rowsAll = [];
+  for (const year of years) {
+    try {
+      const r = await fetch('https://d.10jqka.com.cn/v6/line/48_883994/01/' + year + '.js',
+        { headers: { 'User-Agent': UA, Referer: 'https://q.10jqka.com.cn/' } });
+      const t = await r.text();
+      const obj = JSON.parse(t.slice(t.indexOf('{'), t.lastIndexOf('}') + 1));
+      (obj.data || '').split(';').filter(Boolean).forEach(l => rowsAll.push(l.split(',')));
+    } catch (e) { /* 单年失败容错 */ }
+    await sleep(300);
+  }
+  for (let i = 1; i < rowsAll.length; i++) {
+    const k = rowsAll[i], p = rowsAll[i - 1];
+    if (k.length >= 5 && +k[4] > 0 && +p[4] > 0) map[k[0]] = r2((+k[4] / +p[4] - 1) * 100);
+  }
+  return Object.keys(map).length ? map : null;
+}
+
+// ── 源6: 同花顺大盘日K → 两市成交额 Map（YYYYMMDD → 亿; 拉 2025+2026 两年防跨年 MA20 缺口）──
+async function fetchAmountMap() {
+  const map = {};
+  const years = [2025, 2026];
+  for (const code of ['zs_1A0001', 'zs_399001']) {
+    for (const year of years) {
+      try {
+        const r = await fetch('https://d.10jqka.com.cn/v6/line/' + code + '/01/' + year + '.js',
+          { headers: { 'User-Agent': UA, Referer: 'https://q.10jqka.com.cn/' } });
+        const t = await r.text();
+        const obj = JSON.parse(t.slice(t.indexOf('{'), t.lastIndexOf('}') + 1));
+        (obj.data || '').split(';').filter(Boolean).forEach(l => {
+          const c = l.split(',');
+          if (c.length >= 7 && +c[6] > 0) map[c[0]] = (map[c[0]] || 0) + (+c[6]) / 1e8; // 元 → 亿
+        });
+      } catch (e) { /* 单年失败容错 */ }
+      await sleep(300);
+    }
+  }
+  if (!Object.keys(map).length) return null;
+  return map;
+}
+
+// ── 源8: 东财两融历史（v4.5; T+1 披露 → 最新一日可能缺; RZJME=融资净买入(元) RZYE=融资余额(元)）──
+async function fetchRzrqMap() {
+  const out = {}; let page = 1;
+  while (page <= 3) {
+    try {
+      const r = await fetch('https://datacenter-web.eastmoney.com/api/data/v1/get?pageSize=500&pageNumber=' + page +
+        '&reportName=RPTA_RZRQ_LSHJ&columns=ALL&sortColumns=DIM_DATE&sortTypes=-1',
+        { headers: { 'User-Agent': UA, Referer: 'https://data.eastmoney.com/' } });
+      const j = await r.json();
+      const rows = j && j.result && Array.isArray(j.result.data) ? j.result.data : null;
+      if (!rows || !rows.length) break;
+      rows.forEach(x => {
+        const d = (x.DIM_DATE || '').slice(0, 10);
+        if (d && x.RZYE != null) out[d] = { jme: r2((x.RZJME || 0) / 1e8), ye: r1(x.RZYE / 1e8) };
+      });
+      if (rows.length < 500) break;
+      page++; await sleep(300);
+    } catch (e) { break; }
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+// ── day 组装（v4.5: +连板梯队分布/炸板金额/两融）──
+function buildDay(date, lhbRaw, hotRaw, industry, indexes, pools, amountYi, amountMap, yztMap, prevZtCodes, prevZtLb, rzrqMap) {
+  const lhb = lhbRaw.map(x => ({
+    code: x.SECURITY_CODE, name: x.SECURITY_NAME_ABBR, reason: x.EXPLANATION || '—',
+    close: x.CLOSE_PRICE, change_pct: r2(x.CHANGE_RATE || 0),
+    net_buy_wan: r1((x.BILLBOARD_NET_AMT || 0) / 1e4),
+    buy_wan: r1((x.BILLBOARD_BUY_AMT || 0) / 1e4),
+    sell_wan: r1((x.BILLBOARD_SELL_AMT || 0) / 1e4),
+    turnover_pct: r2(x.TURNOVERRATE || 0)
+  })).sort((a, b) => b.net_buy_wan - a.net_buy_wan);
+
+  // lhb_aggr（clean-data.js 同逻辑）
+  const byCode = new Map();
+  for (const l of lhb) {
+    if (!byCode.has(l.code)) byCode.set(l.code, { ...l, reasons: [l.reason] });
+    else {
+      const acc = byCode.get(l.code);
+      if (!acc.reasons.includes(l.reason)) acc.reasons.push(l.reason);
+      if (Math.abs(l.net_buy_wan || 0) > Math.abs(acc.net_buy_wan || 0)) { acc.net_buy_wan = l.net_buy_wan; acc.buy_wan = l.buy_wan; acc.sell_wan = l.sell_wan; }
+    }
+  }
+  const lhb_aggr = [...byCode.values()];
+
+  const hot = hotRaw.map(x => ({ code: x.code, name: x.name, reason: x.reason || '', close: x.close, change_pct: r2(x.zhangfu || 0), huanshou: r2(x.huanshou || 0) }));
+  const freq = {};
+  hot.forEach(h => (h.reason || '').split(/[+＋]/).forEach(w => { w = w.trim(); if (w) freq[w] = (freq[w] || 0) + 1; }));
+  const topics = Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 15).map(([tag, count]) => ({ tag, count }));
+
+  const net_total_yi = r2(lhb.reduce((a, l) => a + l.net_buy_wan, 0) / 1e4);
+  const net_pos = lhb.filter(l => l.net_buy_wan > 0).length;
+  const net_neg = lhb.filter(l => l.net_buy_wan < 0).length;
+  const ind_up = industry.filter(i => i.change_pct > 0).length;
+  const ind_down = industry.filter(i => i.change_pct < 0).length;
+
+  // ── 新因子: 涨跌停/炸板/成交额 ──
+  const missing = [];
+  const zt = pools ? pools.zt : null, dt = pools ? pools.dt : null, zb = pools ? pools.zb : null;
+  if (zt == null || dt == null || zb == null) missing.push('pools');
+  const zbl_pct = (zt != null && zb != null && (zb + zt) > 0) ? r1(zb / (zb + zt) * 100) : null;
+  const ymdNum = date.replace(/-/g, '');
+  const amount_yi = amountYi != null ? r1(amountYi) : null;
+  if (amount_yi == null) missing.push('amount');
+  // 前 20 日两市均额（不含当日; 从全年 Map 取）
+  const histAmts = amountMap ? Object.keys(amountMap).filter(k => k < ymdNum && amountMap[k] > 0).sort().slice(-20) : [];
+  const amt_ma = histAmts.length >= 10 ? histAmts.reduce((a, k) => a + amountMap[k], 0) / histAmts.length : null;
+  // 昨日涨停指数（打板赚钱效应）+ 断板家数（昨日涨停今日未涨停）
+  const yzt_chg = yztMap ? (yztMap[ymdNum] != null ? yztMap[ymdNum] : null) : null;
+  if (yzt_chg == null) missing.push('yzt');
+  const todayZt = pools && pools.zt_codes ? new Set(pools.zt_codes) : null;
+  const dt_band = (prevZtCodes && prevZtCodes.length && todayZt) ? prevZtCodes.filter(c => !todayZt.has(c)).length : null;
+
+  // ── v4.4 高位股亏钱效应: 昨日连板≥3 高位股今日跌停数/封单/成交额 ──
+  // 区分「良性换手」与「高位崩盘」：高位股大额封单跌停 = 风险扩散信号
+  let hs_lb3_count = null, hs_dt_count = null, hs_dt_fund = null, hs_dt_amt = null;
+  if (prevZtLb && pools) {
+    const lb3 = Object.entries(prevZtLb).filter(([, lb]) => lb >= 3);
+    if (lb3.length) {
+      hs_lb3_count = lb3.length;
+      const dtPool = Array.isArray(pools.dt_detail) ? pools.dt_detail : null;
+      if (dtPool) {
+        const hit = dtPool.filter(p => lb3.some(([c]) => c === p.c));
+        hs_dt_count = hit.length;
+        hs_dt_fund = r1(hit.reduce((s, p) => s + (p.fba || 0), 0) / 1e8);
+        hs_dt_amt = r1(hit.reduce((s, p) => s + (p.amount || 0), 0) / 1e8);
+      }
+    }
+  }
+
+  // ── v4.5: 连板梯队分布 / 炸板金额 / 两融 ──
+  const lb_dist = (() => {
+    if (!pools || !pools.zt_lb) return null;
+    const dist = {};
+    Object.values(pools.zt_lb).forEach(lb => { if (lb >= 2) dist[lb] = (dist[lb] || 0) + 1; });
+    return dist; // {} = 有池数据但无≥2板（与 null=无池数据 区分）
+  })();
+  const zb_amt = (pools && Array.isArray(pools.zb_detail) && pools.zb_detail.length)
+    ? r1(pools.zb_detail.reduce((s, p) => s + (p.amount || 0), 0) / 1e8)
+    : (pools && pools.zb === 0 ? 0 : null); // 0=无炸板（合法）· null=池数据缺失
+  const rzrq = rzrqMap ? (rzrqMap[date] || null) : null; // T+1 披露, 最新一日可能缺
+
+  // ── 七因子 ──
+  const s_net = clamp(r1(net_total_yi * 2 + 50), 0, 100);
+  const s_pos = r1(net_pos / (net_pos + net_neg || 1) * 100);
+  const up_ratio = r1(ind_up / (industry.length || 1) * 100);
+  const s_hot = clamp(r1((hot.length - 20) / 60 * 100), 0, 100);
+  const s_zdt = (zt != null && dt != null) ? clamp(r1((zt + 2) / (zt + dt + 4) * 100), 0, 100) : 50;
+  const s_zbl = (zbl_pct != null) ? clamp(r1(100 - zbl_pct * 2), 0, 100) : 50;
+  const s_amt = (amount_yi != null && amt_ma != null) ? clamp(r1(amount_yi / amt_ma * 50), 0, 100) : 50;
+  const value = r1((s_net * 20 + s_pos * 10 + up_ratio * 20 + s_hot * 10 + s_zdt * 15 + s_zbl * 10 + s_amt * 15) / 100);
+
+  const summary = {
+    lhb_count: lhb.length, lhb_stocks: lhb_aggr.length, net_total_yi, net_pos, net_neg,
+    hot_count: hot.length, topic_kinds: Object.keys(freq).length,
+    ind_count: industry.length, ind_up, ind_down, top_industry: null, bottom_industry: null,
+    zt_count: zt, dt_count: dt, zb_count: zb, zbl_pct,
+    max_lb: pools ? pools.max_lb : null, lb2_count: pools ? pools.lb2 : null,
+    zt_codes: pools ? (pools.zt_codes || null) : null,
+    zt_lb: pools ? (pools.zt_lb || null) : null,
+    dt_band, yzt_chg,
+    hs_lb3_count, hs_dt_count, hs_dt_fund, hs_dt_amt,
+    lb_dist, zb_amt, rzrq,
+    amount_yi
+  };
+  if (missing.length) summary._missing = missing;
+
+  const emotion = {
+    value, s_net, s_pos, s_brd: up_ratio, s_hot, s_zdt, s_zbl, s_amt,
+    net_total_yi, pos_ratio: s_pos, up_ratio,
+    hot_count: hot.length, topic_conc: r1(topics.length ? topics[0].count / (hot.length || 1) * 100 : 0),
+    top_topic: topics.length ? topics[0].tag : '—',
+    pct_rank: null, net_pct_rank: null, industryCount: industry.length
+  };
+  return { trade_date: date, lhb, hot, topics, industry, summary, indexes, emotion, lhb_aggr };
+}
+
+// ── 全档分位重算（pct_rank = rank/(n-1)*100）──
+function recalcRanks(days) {
+  const rank = (vals, i) => { const s = [...vals].sort((a, b) => a - b); return s.indexOf(vals[i]) / Math.max(s.length - 1, 1) * 100; };
+  const vs = days.map(d => d.emotion.value), ns = days.map(d => d.emotion.net_total_yi);
+  days.forEach((d, i) => { d.emotion.pct_rank = r1(rank(vs, i)); d.emotion.net_pct_rank = r1(rank(ns, i)); });
+}
+
+// ── stocks 追加（close 直接用榜单收盘价, 零额外请求）──
+function appendStocks(D, day) {
+  const seen = new Map();
+  day.lhb.forEach(l => seen.set(l.code, l.close));
+  day.hot.forEach(h => { if (!seen.has(h.code)) seen.set(h.code, h.close); });
+  for (const [code, close] of seen) {
+    if (!close) continue;
+    const st = D.stocks[code];
+    if (st) {
+      if (!st.days.includes(day.trade_date)) { st.days.push(day.trade_date); st.closes.push([day.trade_date, close]); }
+      if (!st.name && day.lhb.concat(day.hot).find(x => x.code === code)) st.name = (day.lhb.find(x => x.code === code) || day.hot.find(x => x.code === code)).name;
+    } else {
+      const rec = day.lhb.find(x => x.code === code) || day.hot.find(x => x.code === code);
+      D.stocks[code] = { name: rec.name, days: [day.trade_date], closes: [[day.trade_date, close]] };
+    }
+  }
+}
+
+// ── v4.5 回填: 存档全部历史日补池/额/赚钱效应/高位亏钱效应/两融并全档重算（幂等可重跑; 也可用于补洞）──
+async function backfill() {
+  console.log('═ v4.5 回填: 历史日涨跌停/炸板/成交额/赚钱效应/高位亏钱效应/梯队分布/炸板金额/两融 + 全档重算 ═');
+  const D = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+  const amountMap = await fetchAmountMap();
+  if (!amountMap) { console.error('成交额 Map 拉取失败, 中止'); process.exit(1); }
+  console.log('成交额 Map:', Object.keys(amountMap).length, '个交易日（2025+2026）');
+  const yztMap = await fetchYztMap();
+  console.log('昨涨停指数 883994:', yztMap ? Object.keys(yztMap).length + ' 个交易日' : '拉取失败（yzt 中性缺失）');
+  const rzrqMap = await fetchRzrqMap();
+  console.log('两融历史:', rzrqMap ? Object.keys(rzrqMap).length + ' 个交易日（T+1 披露, 最新一日可能缺）' : '拉取失败（rzrq 缺失）');
+  let filled = 0, missPool = 0, missAmt = 0, hasCodes = 0, hasHs = 0;
+  let prevCodes = null, prevLb = null;
+  for (const day of D.all_days) {
+    const ymd = day.trade_date.replace(/-/g, '');
+    const pools = await fetchPools(day.trade_date);
+    const amountYi = amountMap[ymd] || null;
+    if (pools) filled++; else missPool++;
+    if (!amountYi) missAmt++;
+    // 重组 summary/emotion 新字段（保留原有其余字段）
+    const rebuilt = buildDay(day.trade_date,
+      day.lhb.map(l => ({ SECURITY_CODE: l.code, SECURITY_NAME_ABBR: l.name, EXPLANATION: l.reason, CLOSE_PRICE: l.close, CHANGE_RATE: l.change_pct, BILLBOARD_NET_AMT: l.net_buy_wan * 1e4, BILLBOARD_BUY_AMT: l.buy_wan * 1e4, BILLBOARD_SELL_AMT: l.sell_wan * 1e4, TURNOVERRATE: l.turnover_pct })),
+      day.hot.map(h => ({ code: h.code, name: h.name, reason: h.reason, close: h.close, zhangfu: h.change_pct, huanshou: h.huanshou })),
+      day.industry || [], day.indexes || null, pools, amountYi, amountMap, yztMap, prevCodes, prevLb, rzrqMap);
+    day.summary = rebuilt.summary;
+    day.emotion = rebuilt.emotion;
+    if (day.summary.zt_codes) hasCodes++;
+    if (day.summary.hs_dt_count != null) hasHs++;
+    prevCodes = day.summary.zt_codes; // 相邻天传递 → 断板家数
+    prevLb = day.summary.zt_lb;       // 相邻天传递 → 高位股亏钱效应（v4.4）
+    console.log(' ', day.trade_date, '· 涨停', day.summary.zt_count == null ? '缺' : day.summary.zt_count,
+      '· 断板', day.summary.dt_band == null ? '缺' : day.summary.dt_band,
+      '· 赚钱效应', day.summary.yzt_chg == null ? '缺' : day.summary.yzt_chg + '%',
+      '· 高位跌停', day.summary.hs_dt_count == null ? '缺' : day.summary.hs_dt_count + '(封单' + (day.summary.hs_dt_fund ?? '—') + '亿)',
+      '· 炸板额', day.summary.zb_amt == null ? '缺' : day.summary.zb_amt + '亿',
+      '· 两融净', day.summary.rzrq == null ? '缺' : day.summary.rzrq.jme + '亿',
+      '· 额', day.summary.amount_yi == null ? '缺' : day.summary.amount_yi + '亿',
+      '→ 情绪', day.emotion.value);
+    await sleep(400);
+  }
+  recalcRanks(D.all_days);
+  D.meta = D.meta || {};
+  D.meta.dataQuality = Object.assign({}, D.meta.dataQuality, {
+    formulaVersion: 'v4.5 七因子（s_net20/s_pos10/s_brd20/s_hot10/s_zdt15/s_zbl10/s_amt15）+ yzt/dt_band/hs/lb_dist/zb_amt/rzrq',
+    formulaNote: 's_zdt=(涨停+2)/(涨停+跌停+4)*100; s_zbl=100-炸板率*2; s_amt=两市额/前20日均额*50; 东财池保留约3周, 更早日 s_zdt/s_zbl 中性50补位（summary._missing 标记）; yzt_chg=同花顺883994昨日涨停指数当日涨跌幅（打板赚钱效应）; dt_band=断板家数（相邻两日池齐全才可算）; hs_lb3_count=昨日连板≥3高位股家数, hs_dt_count/hs_dt_fund/hs_dt_amt=高位股今日跌停数/封单合计(亿)/成交额合计(亿); lb_dist=连板梯队分布{板级:家数}(≥2板); zb_amt=炸板股成交额合计(亿); rzrq=两融{jme:融资净买入(亿),ye:融资余额(亿)}（T+1 披露, 最新一日可能缺, 重跑 backfill 即补）',
+    formulaChangeDate: '2026-09-27',
+    backfilledAt: new Date().toISOString()
+  });
+  fs.copyFileSync(DATA_FILE, path.join(__dirname, 'data.backup-pre-v45.json'));
+  fs.writeFileSync(DATA_FILE, JSON.stringify(D));
+  console.log('\n回填完成: 真实池 ' + filled + ' 天 · 缺池 ' + missPool + '（中性补位） · 缺额 ' + missAmt + ' · 涨停成员 ' + hasCodes + ' 天 · 高位亏钱效应 ' + hasHs + ' 天');
+  console.log('备份: data.backup-pre-v45.json · 存档 ' + D.all_days.length + ' 天已重算');
+  console.log('重建 dist…');
+  execSync('node build.js', { cwd: __dirname, stdio: 'inherit' });
+  console.log('已同步发布目录（build.js: dist + 独立发布目录 + task-manager/public）');
+}
+
+(async () => {
+  if (BACKFILL) { await backfill(); return; }
+  console.log('═ SDK 每日管道启动（v4.3 七因子）═' + (DRY ? '（dry 干跑）' : '') + (CHECK ? '（check=' + CHECK + ' 对齐验证）' : ''));
+  const hotRaw = await fetchHot();
+  const apiDate = hotRaw[0].date;
+  console.log('最近交易日:', apiDate, '· 强势股', hotRaw.length, '只');
+  const D = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+  const dates = D.all_days.map(d => d.trade_date);
+
+  // ── check 模式: 指定日（须已在存档）抓取 diff ──
+  if (CHECK) {
+    const arch = D.all_days.find(d => d.trade_date === CHECK);
+    if (!arch) { console.error('存档无 ' + CHECK + '，无法比对'); process.exit(1); }
+    if (apiDate !== CHECK) console.log('⚠ API 最新交易日是 ' + apiDate + '，非 ' + CHECK + '——数据按存档日期抓取比对');
+    const [lhbRaw, pools, amountMap, yztMap] = [await fetchLhb(CHECK), await fetchPools(CHECK), await fetchAmountMap(), await fetchYztMap()];
+    const amountYi = pools ? (amountMap ? (amountMap[CHECK.replace(/-/g, '')] || null) : null) : null;
+    const ci = D.all_days.findIndex(d => d.trade_date === CHECK);
+    const prevZtCodes = ci > 0 ? (D.all_days[ci - 1].summary.zt_codes || null) : null;
+    const prevZtLb = ci > 0 ? (D.all_days[ci - 1].summary.zt_lb || null) : null;
+    // check 模式两融传 null（不参与对齐比对）
+    const lhbNew = buildDay(CHECK, lhbRaw, hotRaw, arch.industry || [], null, pools, amountYi, amountMap, yztMap, prevZtCodes, prevZtLb, null);
+    const diffL = lhbNew.lhb.filter(n => { const o = arch.lhb.find(l => l.code === n.code && l.reason === n.reason); return !o || Math.abs(o.net_buy_wan - n.net_buy_wan) > 0.01; });
+    const diffH = lhbNew.hot.filter(n => { const o = arch.hot.find(l => l.code === n.code); return !o || Math.abs(o.close - n.close) > 0.001; });
+    console.log('对齐验证 · 龙虎榜: 抓', lhbNew.lhb.length, 'vs 存', arch.lhb.length, '· 差异', diffL.length, diffL.slice(0, 3));
+    console.log('对齐验证 · 强势股: 抓', lhbNew.hot.length, 'vs 存', arch.hot.length, '· 差异', diffH.length, diffH.slice(0, 3));
+    console.log('对齐验证 · 净买: 抓', lhbNew.summary.net_total_yi, 'vs 存', arch.summary.net_total_yi);
+    console.log('新因子 · 池:', pools ? JSON.stringify(pools) : '超保留深度', '· 两市额:', amountYi ? r1(amountYi) + '亿' : '缺');
+    if (arch.summary.zt_count != null) console.log('新因子对照 · 存档: 涨停', arch.summary.zt_count, '炸板', arch.summary.zb_count, '· 抓取: 涨停', lhbNew.summary.zt_count, '炸板', lhbNew.summary.zb_count);
+    console.log('情绪对照 · 存档（回填后公式）:', arch.emotion.value, '· 现抓重算:', lhbNew.emotion.value);
+    console.log(CHECK === apiDate ? '结论: 原始数据 ' + (diffL.length + diffH.length === 0 ? '✓ 对齐通过' : '✗ 有差异!') : '结论: 非同日, 仅参考');
+    return;
+  }
+
+  // ── 幂等: 已是最新 ──
+  if (dates.includes(apiDate)) { console.log('✓ ' + apiDate + ' 已在存档（共 ' + dates.length + ' 天），无新交易日，退出'); return; }
+
+  // ── 抓取其余源 ──
+  console.log('抓取龙虎榜…');
+  const lhbRaw = await fetchLhb(apiDate);
+  console.log('  龙虎榜', lhbRaw.length, '条');
+  console.log('抓取行业日K（90 板块 × 当日, 约 12s）…');
+  const industry = await fetchBoards(apiDate);
+  console.log('  行业', industry.length, '个 · 领涨', industry[0].name, industry[0].change_pct + '% · 领跌', industry[industry.length - 1].name, industry[industry.length - 1].change_pct + '%');
+  const indexes = await fetchIndexes(apiDate);
+  console.log('  指数:', indexes ? JSON.stringify(indexes) : '（不可用, 置空容错）');
+  console.log('抓取涨跌停/炸板池 + 两市成交额 + 昨涨停指数…');
+  const pools = await fetchPools(apiDate);
+  const amountMap = await fetchAmountMap();
+  const yztMap = await fetchYztMap();
+  console.log('抓取两融历史（T+1 披露）…');
+  const rzrqMap = await fetchRzrqMap();
+  const amountYi = amountMap ? (amountMap[apiDate.replace(/-/g, '')] || null) : null;
+  const lastDay = D.all_days[D.all_days.length - 1];
+  const prevZtCodes = (lastDay && lastDay.summary) ? (lastDay.summary.zt_codes || null) : null;
+  const prevZtLb = (lastDay && lastDay.summary) ? (lastDay.summary.zt_lb || null) : null;
+  console.log('  池:', pools ? ('涨停 ' + pools.zt + ' · 炸板 ' + pools.zb + ' · 跌停 ' + pools.dt + ' · 最高连板 ' + pools.max_lb) : '超保留深度（中性补位）',
+    '· 两市额:', amountYi ? r1(amountYi) + '亿' : '缺',
+    '· 昨涨停效应:', yztMap && yztMap[apiDate.replace(/-/g, '')] != null ? yztMap[apiDate.replace(/-/g, '')] + '%' : '缺');
+
+  const day = buildDay(apiDate, lhbRaw, hotRaw, industry, indexes, pools, amountYi, amountMap, yztMap, prevZtCodes, prevZtLb, rzrqMap);
+  if (!day.lhb.length || !day.hot.length) { console.error('当日数据异常（空榜）——可能非交易日，中止'); process.exit(1); }
+
+  // ── 追加 + 全档重算 ──
+  D.all_days.push(day);
+  D.all_days.sort((a, b) => a.trade_date < b.trade_date ? -1 : 1);
+  recalcRanks(D.all_days);
+  appendStocks(D, day);
+  D.board_rank = D.board_rank || {};
+  D.board_rank[apiDate] = industry.map(i => [i.name, i.change_pct]);
+  D.meta = D.meta || {};
+  D.meta.holidays = [...new Set([...(D.meta.holidays || [])])].sort();
+  D.meta.dataQuality = Object.assign({}, D.meta.dataQuality, {
+    dailyPipe: 'fetch-daily.js 自动管道 v4.5（东财龙虎榜+getharden+881xxx日K+腾讯指数+涨跌停炸板池(含封单/梯队/炸板额)+两市额+883994昨涨停+高位亏钱效应+两融）',
+    dailyPipeNote: 'pct_rank/net_pct_rank 为存档期内分位 rank/(n-1)，每次追加全档重算',
+    formulaVersion: 'v4.5 七因子（s_net20/s_pos10/s_brd20/s_hot10/s_zdt15/s_zbl10/s_amt15）+ yzt/dt_band/hs/lb_dist/zb_amt/rzrq',
+    dailyPipeLastRun: new Date().toISOString()
+  });
+
+  // ── 校验: 新日情绪与其 KPI 合理性 ──
+  console.log('\n新交易日组装完成:');
+  console.log('  情绪值', day.emotion.value, '（净买', day.emotion.s_net, '· 广度', day.emotion.s_brd, '· 热度', day.emotion.s_hot, '· 涨跌停', day.emotion.s_zdt, '· 封板', day.emotion.s_zbl, '· 量能', day.emotion.s_amt, '）');
+  console.log('  净买 ¥' + day.summary.net_total_yi + '亿 · 榜', day.summary.lhb_count, '条/' + day.summary.lhb_stocks + '股 · 强势股', day.summary.hot_count,
+    '· 涨停', day.summary.zt_count, '· 断板', day.summary.dt_band, '· 昨涨停效应', day.summary.yzt_chg + '%',
+    '· 高位股', day.summary.hs_lb3_count == null ? '缺' : day.summary.hs_lb3_count,
+    '· 高位跌停', day.summary.hs_dt_count == null ? '缺' : day.summary.hs_dt_count + '(封单' + (day.summary.hs_dt_fund ?? '—') + '亿)',
+    '· 炸板额', day.summary.zb_amt == null ? '缺' : day.summary.zb_amt + '亿',
+    '· 两融净', day.summary.rzrq == null ? '缺' : day.summary.rzrq.jme + '亿',
+    '· 两市 ¥' + day.summary.amount_yi + '亿 · 领涨板块', day.industry[0].name);
+  if (day.summary.lhb_count < 20 || day.summary.hot_count < 10) { console.error('⚠ 数据量异常偏少, 中止不写入'); process.exit(1); }
+
+  if (DRY) { console.log('\n（dry 模式: 不写入不构建）'); return; }
+
+  fs.copyFileSync(DATA_FILE, path.join(__dirname, 'data.backup-pre-daily.json'));
+  fs.writeFileSync(DATA_FILE, JSON.stringify(D));
+  console.log('data.json 已写入（备份 data.backup-pre-daily.json）·', D.all_days.length, '个交易日');
+
+  // ── 构建 + 发布目录 ──
+  console.log('重建 dist…');
+  execSync('node build.js', { cwd: __dirname, stdio: 'inherit' });
+  fs.copyFileSync(path.join(__dirname, 'dist', 'index.html'), TASK_PUBLIC);
+  fs.copyFileSync(path.join(__dirname, 'dist', 'index.html'), path.join(PUB_DIR, 'index.html'));
+  console.log('已同步: task-manager/public/sentiment.html + 独立发布目录');
+  console.log('\n══ ' + apiDate + ' 入档完成 · 存档 ' + D.all_days.length + ' 个交易日 ══');
+  console.log('（发布: 用 sites 工具重发 task-manager 目录即可上线）');
+})().catch(e => { console.error('FATAL:', e.message); process.exit(1); });
