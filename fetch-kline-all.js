@@ -83,6 +83,47 @@ async function fetchHistory(code) {
 
 function shardPath(code) { return path.join(KLINE_DIR, code + '.json'); }
 
+// ── v4.8.1 回填专用节奏化循环（单工 + 自适应冷却）──
+// 实测教训：CONC=4/80ms ≈ 12.8 请求/秒，腾讯在 ~1000 次后封禁出口 IP（此后 60+ 分钟全拒，失败率 78%）。
+// 对策：单工 300ms 基础间隔 + 连续失败指数冷却（15s→8min 封顶）+ 每 800 只分批 git 提交（进度落袋，可断点续跑）。
+async function pacedLoop(items, worker) {
+  const paceBase = parseInt(process.env.SENT_KLINE_INTERVAL || '300', 10);
+  let pace = paceBase, done = 0, failStreak = 0, coolN = 0, okStreak = 0;
+  const errs = [];
+  const t0 = Date.now();
+  for (const it of items) {
+    let ok = false;
+    try { await worker(it); ok = true; } catch (e) { errs.push({ item: it, msg: e.message }); }
+    done++;
+    if (done % 400 === 0) console.log('  进度 ' + done + '/' + items.length + ' · 失败 ' + errs.length + ' · 节奏 ' + pace + 'ms · 用时 ' + Math.round((Date.now() - t0) / 1000) + 's');
+    if (ok) {
+      failStreak = 0; okStreak++;
+      if (okStreak % 300 === 0 && pace > paceBase) pace = Math.max(paceBase, Math.round(pace * 0.9));  // 成功 streak 达 300 → 缓慢收窄节奏
+    } else {
+      failStreak++; okStreak = 0;
+      if (failStreak >= 3) {                                     // 连续 3 失败 → 判定疑似限流，全局冷却
+        coolN = Math.min(coolN + 1, 6);
+        const pause = Math.min(15000 * Math.pow(2, coolN - 1), 480000);
+        pace = Math.min(Math.round(pace * 1.4), 2000);
+        console.log('  ⚠ 连续失败 ' + failStreak + ' → 冷却 ' + Math.round(pause / 1000) + 's · 节奏放宽至 ' + pace + 'ms');
+        await sleep(pause);
+      }
+    }
+    await sleep(pace + Math.round(Math.random() * 100));          // 抖动 ±100ms，避免机械节拍
+  }
+  return errs;
+}
+
+function gitCommitShards(n) {
+  try {
+    require('child_process').execSync(
+      'git add kline && git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -m "kline backfill: +' + n + ' shards (batch)"',
+      { stdio: ['ignore', 'ignore', 'ignore'], cwd: __dirname });
+    console.log('  📦 分批提交: 累计 ' + n + ' 只已 commit（断点保护）');
+    return true;
+  } catch (e) { return false; }                                  // 无变更（全跳过）时 commit 失败属正常
+}
+
 async function pooled(items, worker) {
   const queue = items.slice();
   let done = 0; const errs = [];
@@ -119,16 +160,21 @@ async function runInit() {
   if (DRY) { console.log('--dry 干跑结束'); return; }
 
   let fresh = 0, skip = 0;
-  const errs = await pooled(list, async it => {
+  const errs = await pacedLoop(list, async it => {
     const fp = shardPath(it.c);
     if (fs.existsSync(fp)) { skip++; return; }
     const bars = await fetchHistory(it.c);
     if (!bars || bars.length < 5) return;                     // 长期停牌/新股无数据 → 跳过不留空壳
     fs.writeFileSync(fp, JSON.stringify({ c: it.c, n: it.n, bars }));
     fresh++;
+    if (fresh % 800 === 0) gitCommitShards(fresh);            // 每 800 只分批提交：再被封禁也不丢进度
   });
   console.log('══ 回填完成: 新增 ' + fresh + ' · 已存在跳过 ' + skip + ' · 失败 ' + errs.length + ' ══');
-  if (errs.length) { errs.slice(0, 5).forEach(e => console.error('  例:', e.item.c, e.msg)); if (errs.length > list.length * 0.1) process.exit(1); }
+  if (errs.length) {
+    errs.slice(0, 5).forEach(e => console.error('  例:', e.item.c, e.msg));
+    gitCommitShards(fresh);                                   // 失败超限也先把已有进度提交落袋
+    if (errs.length > list.length * 0.1) { console.error('失败率超 10% → exit 1（已提交部分可断点续跑）'); process.exit(1); }
+  }
 }
 
 // ── 每日增量 ──
