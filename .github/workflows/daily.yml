@@ -4,7 +4,12 @@ on:
   schedule:
     # UTC 10:30 = 北京时间 18:30（周一至五）；GitHub 定时触发可能有数分钟~半小时延迟
     - cron: '30 10 * * 1-5'
-  workflow_dispatch: {}   # 手动首跑 / 补跑入口（Actions 页面右上角 Run workflow）
+  workflow_dispatch:   # 手动首跑 / 补跑 / K线回填入口（Actions 页面右上角 Run workflow）
+    inputs:
+      kline_backfill:
+        description: '全市场K线历史回填（首次/补历史时勾选，约 15 分钟）'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -18,7 +23,7 @@ concurrency:
 jobs:
   pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 40
     env:
       TZ: Asia/Shanghai          # 进程时区对齐北京
       SENT_SITE_DIR: /tmp/sent-site   # 绕开 Windows 硬编码发布目录（Linux 无 C:\）
@@ -43,12 +48,20 @@ jobs:
             echo "updated=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: 重建产物
-        if: steps.gate.outputs.updated == 'true'
+      - name: 重建产物（含 kline 分片拷贝）
+        if: steps.gate.outputs.updated == 'true' || inputs.kline_backfill == true
         run: node build.js
 
-      - name: 提交 data.json 回仓库（数据持久化，永不丢失）
+      - name: 全市场K线增量（追加当日 bar，停牌自动跳过）
         if: steps.gate.outputs.updated == 'true'
+        run: node fetch-kline-all.js
+
+      - name: 全市场K线历史回填（仅手动勾选时执行）
+        if: inputs.kline_backfill == true
+        run: node fetch-kline-all.js --init
+
+      - name: 提交 data.json + kline 回仓库（数据持久化，永不丢失）
+        if: steps.gate.outputs.updated == 'true' || inputs.kline_backfill == true
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -56,15 +69,15 @@ jobs:
           git diff --cached --quiet || (git commit -m "pipeline: $(date +'%F') 数据更新" && git push)
 
       - name: 配置 Pages
-        if: steps.gate.outputs.updated == 'true'
+        if: steps.gate.outputs.updated == 'true' || inputs.kline_backfill == true
         uses: actions/configure-pages@v5
 
       - name: 上传产物
-        if: steps.gate.outputs.updated == 'true'
+        if: steps.gate.outputs.updated == 'true' || inputs.kline_backfill == true
         uses: actions/upload-pages-artifact@v3
         with:
           path: dist
 
       - name: 发布到 GitHub Pages
-        if: steps.gate.outputs.updated == 'true'
+        if: steps.gate.outputs.updated == 'true' || inputs.kline_backfill == true
         uses: actions/deploy-pages@v4

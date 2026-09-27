@@ -235,5 +235,20 @@ const taskPublic = path.join(__dirname, '..', 'task-manager', 'public', 'sentime
 if (fs.existsSync(path.dirname(taskPublic))) fs.copyFileSync(outFile, taskPublic);
 
 console.log('发布目录:', path.join(siteDir, 'index.html'));
+
+// v4.8: 全市场K线分片随产物发布（Pages 伺服 kline/*.json，前端按需 fetch + IndexedDB 缓存）
+const klineDir = path.join(__dirname, 'kline');
+if (fs.existsSync(klineDir)) {
+  const kdist = path.join(distDir, 'kline');
+  if (!fs.existsSync(kdist)) fs.mkdirSync(kdist, { recursive: true });
+  let kn = 0;
+  for (const f of fs.readdirSync(klineDir)) {
+    if (!f.endsWith('.json')) continue;
+    fs.copyFileSync(path.join(klineDir, f), path.join(kdist, f));
+    kn++;
+  }
+  console.log('K线分片随产物:', kn, '个文件 → dist/kline/');
+}
+
 console.log('构建完成:', outFile, (fs.statSync(outFile).size / 1024).toFixed(0) + ' KB');
 console.log('patch 应用:', PATCHES.length, '项 + 数据质量警示 1 项 + 实验室模块', MODULES.length, '个，全部成功');
