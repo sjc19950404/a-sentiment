@@ -103,7 +103,7 @@ async function pacedLoop(items, worker) {
     } else {
       failStreak++; okStreak = 0;
       if (failStreak >= 60) { console.log('⚠ 连续失败 ' + failStreak + ' → 判定行情源封禁，提前收工（已抓 ' + fresh + ' 只已分批提交，下次运行断点续跑）'); break; }
-      if (failStreak >= 3) {                                     // 连续 3 失败 → 判定疑似限流，全局冷却
+      if (failStreak >= 3 && failStreak % 10 === 0) {            // v4.8.4: 每 10 次连续失败才冷却探测一次（否则每次失败都睡 8 分钟，熔断线 60 要 8 小时才够得着）
         coolN = Math.min(coolN + 1, 6);
         const pause = Math.min(15000 * Math.pow(2, coolN - 1), 480000);
         pace = Math.min(Math.round(pace * 1.4), 2000);
