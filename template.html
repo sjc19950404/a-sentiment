@@ -150,6 +150,10 @@ textarea:focus{outline:none;border-color:#33415c}
 .note-item pre{white-space:pre-wrap;font-family:inherit;font-size:12.5px;color:#c6cfdd;margin-top:4px}
 .toast{position:fixed;bottom:26px;left:50%;transform:translateX(-50%);background:#1b2436;border:1px solid #33415c;color:#fff;padding:9px 20px;border-radius:10px;font-size:13px;z-index:200;opacity:0;transition:.25s;pointer-events:none;box-shadow:0 8px 30px rgba(0,0,0,.4);max-width:80vw}
 .toast.on{opacity:1}
+/* ── v4.8.2 模块悬停提示 ── */
+#modtip{position:fixed;left:0;top:0;z-index:300;max-width:340px;background:#0d1220;border:1px solid #33415c;border-radius:9px;padding:9px 12px;font-size:12px;line-height:1.7;color:#c6cfdd;box-shadow:0 10px 34px rgba(0,0,0,.55);pointer-events:none;opacity:0;transition:opacity .12s;display:none}
+#modtip.on{display:block;opacity:1}
+#modtip b{color:#e8edf5}
 /* ── 实时条 ── */
 #rt-bar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;background:linear-gradient(90deg,#101826,#0e1320);border:1px solid #2a3550;border-radius:10px;padding:8px 14px;margin-bottom:12px;font-size:12.5px;min-width:0}
 #rt-bar>span{white-space:nowrap}
@@ -174,7 +178,7 @@ textarea:focus{outline:none;border-color:#33415c}
   <div class="hd-sub" id="st-sub"></div>
 </header>
 
-<div id="rt-bar">
+<div id="rt-bar" data-modtip="<b>实时条</b>：腾讯指数 + 东财涨停池 JSONP 直连（不经服务器）。交易时段 30 秒轮询；盘外显示最近收盘快照。⟳ 手动立即刷新。">
   <span id="rt-data"><span class="dim">实时条连接中…</span></span>
   <span id="rt-status"></span>
   <span id="rt-refresh" title="手动拉取实时快照（JSONP 直连腾讯/东财）">⟳ 刷新</span>
@@ -192,47 +196,48 @@ textarea:focus{outline:none;border-color:#33415c}
 
 <!-- ═══ Tab1 当日盘面 ═══ -->
 <div class="pane on" id="p1">
-  <div class="kpis" id="cur-kpis"></div>
-  <section><h2>题材热度榜 <span class="note">同花顺强势股归因 · 按 + 拆分词频 TOP15</span></h2><div id="svg-topics"></div></section>
-  <section><h2>题材强度榜 <span class="note">宽度30 + 高度30 + 榜上资金20 + 持续性20 · 综合打分 TOP12</span></h2><div class="tbl-box"><table id="tbl-tstrength"></table></div></section>
-  <section><h2>行业板块涨跌榜 <span class="note" id="ind-note"></span></h2><div class="sec-desc" id="ind-desc"></div><div id="svg-industry"></div></section>
-  <section><h2>龙虎榜净买入排名 <span class="note">按净买入额降序 · TOP15</span></h2><div class="sec-desc" id="lhb-desc"></div><div id="svg-lhb"></div></section>
+  <div class="kpis" id="cur-kpis" data-modtip="<b>当日核心 KPI 卡组</b>——涨停/跌停 · 连板梯队（断板/最高板/分布）· 昨涨停效应（883994 打板赚钱效应）· 炸板率 · 两市成交额 · 两融 · 高位亏钱效应。它们就是情绪公式七因子的成分速览，口径细节看实验室 S6 公式审计。"></div>
+  <section data-modtip="<b>看什么</b>：今天市场上的钱在炒什么题材。<br><b>口径</b>：同花顺强势股池的题材标签按「+」拆分统计词频，TOP15。<br><b>联动</b>：点个股条目打开个股详情（K线/上榜史/资金画像）。"><h2>题材热度榜 <span class="note">同花顺强势股归因 · 按 + 拆分词频 TOP15</span></h2><div id="svg-topics"></div></section>
+  <section data-modtip="<b>四维综合打分</b>：宽度30（覆盖强势股数）+ 高度30（平均涨幅/连板高度）+ 榜上资金20（净买合计）+ 持续性20（近5日连续在榜）。<br>综合分 TOP12——与左图纯词频的热度榜互补：热度看关注度，强度看质量。"><h2>题材强度榜 <span class="note">宽度30 + 高度30 + 榜上资金20 + 持续性20 · 综合打分 TOP12</span></h2><div class="tbl-box"><table id="tbl-tstrength"></table></div></section>
+  <section data-modtip="<b>口径</b>：同花顺行业指数日K（881xxx，90 板块）重建，涨跌幅=close/preClose−1。<br>历史数据受限时段由日K回填补齐（记录见 S6 数据质量公示）。悬停条目看精确数值。"><h2>行业板块涨跌榜 <span class="note" id="ind-note"></span></h2><div class="sec-desc" id="ind-desc"></div><div id="svg-industry"></div></section>
+  <section data-modtip="<b>口径</b>：东财龙虎榜按股聚合（同股多榜去重）后按净买入降序 TOP15。<br>红=净买入（看多资金进场），绿=净卖出。点条目看个股详情。"><h2>龙虎榜净买入排名 <span class="note">按净买入额降序 · TOP15</span></h2><div class="sec-desc" id="lhb-desc"></div><div id="svg-lhb"></div></section>
   <div class="grid2">
-    <section style="margin-bottom:0"><h2>龙虎榜全榜 <span class="note" id="lhb-tbl-note"></span></h2><div class="tbl-box"><table id="tbl-lhb"></table></div></section>
-    <section style="margin-bottom:0"><h2>强势股题材归因 <span class="note" id="hot-tbl-note"></span></h2><div class="tbl-box"><table id="tbl-hot"></table></div></section>
+    <section style="margin-bottom:0" data-modtip="<b>当日全部上榜记录</b>（一股多榜保留=业务真实口径），含买/卖额、净买、上榜原因。<br>上方「净买入排名」是聚合视图，这里是明细层。"><h2>龙虎榜全榜 <span class="note" id="lhb-tbl-note"></span></h2><div class="tbl-box"><table id="tbl-lhb"></table></div></section>
+    <section style="margin-bottom:0" data-modtip="<b>同花顺强势股池明细</b>：每只股的收盘价/涨幅/题材标签。<br>「题材热度榜」就是由本表统计而来——这里是它的明细层。"><h2>强势股题材归因 <span class="note" id="hot-tbl-note"></span></h2><div class="tbl-box"><table id="tbl-hot"></table></div></section>
   </div>
 </div>
 
 <!-- ═══ Tab2 情绪指数 ═══ -->
 <div class="pane" id="p2">
-  <div class="kpis" id="emo-kpis"></div>
-  <section><h2>市场情绪指数 <span class="note">0-100 · 四子指标加权 · 金色虚线=线性外推(统计,非预测)</span></h2>
+  <div class="kpis" id="emo-kpis" data-modtip="<b>情绪指数 KPI 卡组</b>：当前情绪值、历史分位、净买合计、涨跌比、题材热度、题材集中度等当日核心读数——指数曲线的数字摘要。"></div>
+  <section data-modtip="<b>公式 v4.3 七因子</b>：净买20% + 家数比10% + 行业广度20% + 题材热度10% + 涨跌停对比15% + 封板质量10% + 量能15%，合成 0-100。<br><b>分位</b>=在全部存档日中的排名。<br><b>金色虚线</b>=近 10 点最小二乘线性回归外推 3 个交易日（统计外推，非预测）。悬停数据点看当日明细与各因子分项。">
+    <h2>市场情绪指数 <span class="note">0-100 · 四子指标加权 · 金色虚线=线性外推(统计,非预测)</span></h2>
     <div class="sec-desc">子指标: 龙虎榜净买(35%) + 净买家数比(25%) + 行业广度(25%) + 题材热度(15%) · 悬停数据点查看明细</div>
     <div id="svg-emotion"></div></section>
-  <section><h2>龙虎榜净买入合计 <span class="note">单位 ¥亿 · 红=净买入 绿=净卖出</span></h2><div id="svg-net"></div></section>
+  <section data-modtip="<b>全市场龙虎榜净买额按日合计（¥亿）</b>。红=净买入（打板资金进场），绿=净卖出（获利离场）。<br>这是情绪公式中权重最高的子因子（20%）——资金面温度计。"><h2>龙虎榜净买入合计 <span class="note">单位 ¥亿 · 红=净买入 绿=净卖出</span></h2><div id="svg-net"></div></section>
 </div>
 
 <!-- ═══ Tab3 历史回看 ═══ -->
 <div class="pane" id="p3">
-  <section>
+  <section data-modtip="<b>存档浏览入口</b>：下拉选择历史交易日，下方 KPI 与三张卡联动展示当日快照。<br>存档由云端管道每个交易日自动入档，只增不减；法定节假日自动跳过。">
     <h2>选择交易日 <span class="note" id="hist-range"></span></h2>
     <div class="sec-desc">存档含当日龙虎榜全榜 / 强势股归因 / 行业涨跌榜（由板块日K重建）</div>
     <select id="day-sel" style="min-width:220px"></select>
     <div style="margin-top:8px;color:var(--faint);font-size:11.5px" id="hist-idx"></div>
   </section>
-  <div class="kpis" id="hist-kpis"></div>
+  <div class="kpis" id="hist-kpis" data-modtip="<b>历史当日快照 KPI</b>：所选交易日的情绪值/净买/涨跌结构等读数，与当日存档完全一致——回到那一天看盘。"></div>
   <div class="grid2">
-    <section style="margin-bottom:0"><h2>题材热度 TOP10 <span class="note" id="h-topic-note"></span></h2><div id="svg-h-topics"></div></section>
-    <section style="margin-bottom:0"><h2>龙虎榜净买 TOP10 <span class="note">当日</span></h2><div id="svg-h-lhb"></div></section>
+    <section style="margin-bottom:0" data-modtip="<b>历史当日题材词频 TOP10</b>，与 Tab1「题材热度榜」同源同口径（历史切片）。"><h2>题材热度 TOP10 <span class="note" id="h-topic-note"></span></h2><div id="svg-h-topics"></div></section>
+    <section style="margin-bottom:0" data-modtip="<b>历史当日净买入 TOP10</b>（个股聚合口径），与 Tab1「龙虎榜净买入排名」同源。"><h2>龙虎榜净买 TOP10 <span class="note">当日</span></h2><div id="svg-h-lhb"></div></section>
   </div>
-  <section style="margin-top:12px"><h2>当日行业涨跌榜 <span class="note" id="h-ind-note"></span></h2><div id="svg-h-ind"></div></section>
+  <section style="margin-top:12px" data-modtip="<b>历史当日行业板块涨跌</b>（881xxx 日K重建，与 Tab1 口径一致），回看当日行业轮动结构。"><h2>当日行业涨跌榜 <span class="note" id="h-ind-note"></span></h2><div id="svg-h-ind"></div></section>
 </div>
 
 <!-- ═══ Tab4 信号中心 ═══ -->
 <div class="pane" id="p4">
-  <div class="kpis" id="sig-kpis"></div>
+  <div class="kpis" id="sig-kpis" data-modtip="<b>信号中心 KPI 卡组</b>：动量/广度类衍生读数，为下方信号卡提供当日背景。"></div>
   <div class="grid2">
-    <section><h2>题材动量 <span class="note">近5日 vs 前5日 出现只数</span></h2>
+    <section data-modtip="<b>近5日 vs 前5日题材上榜只数对比</b>。<br>▲延续=数量增且连续在榜≥2日；✦新晋=前5日未出现；▼退潮=前5日常客近5日消失。<br>题材动量对情绪拐点有领先性——适合当确认信号，别当唯一依据。"><h2>题材动量 <span class="note">近5日 vs 前5日 出现只数</span></h2>
       <div class="sec-desc">延续 = 数量增且连续在榜 ≥2 日 · 新晋 = 前5日未现 · 退潮 = 前5日常客近5日消失</div>
       <div class="grid2">
         <div class="signal-card"><h3 class="up">▲ 延续上升</h3><div id="sig-rise"></div></div>
@@ -240,12 +245,12 @@ textarea:focus{outline:none;border-color:#33415c}
       </div>
       <div class="signal-card" style="margin-top:10px"><h3 class="down">▼ 退潮题材</h3><div id="sig-fade"></div></div>
     </section>
-    <section><h2>行业 5 日动量 <span class="note">板块收盘价 5 日涨幅</span></h2>
+    <section data-modtip="<b>90 个行业板块收盘价 5 日涨幅</b>排名：TOP8 强势 / BOTTOM8 弱势。<br>行业轮动的量化快照——与题材动量交叉验证：主线是否从题材扩散到行业层面。"><h2>行业 5 日动量 <span class="note">板块收盘价 5 日涨幅</span></h2>
       <div class="signal-card"><h3 class="up">▲ 强势 TOP8</h3><div id="sig-indtop"></div></div>
       <div class="signal-card" style="margin-top:10px"><h3 class="down">▼ 弱势 BOTTOM8</h3><div id="sig-indbot"></div></div>
     </section>
   </div>
-  <section><h2>📅 板块每日涨跌幅排行 <span class="note">一年存档 · 90 个行业板块</span></h2>
+  <section data-modtip="<b>一年存档 · 90 板块 × 245 交易日</b>。下拉选任意交易日，看当日领涨/领跌 TOP15。<br>上方一年期「行业广度」曲线=每日上涨板块占比（50%=多空分界），观察市场整体强弱周期的大格局。<br>与 S11 区间回测配合：什么情绪区间做板块轮动胜率高。"><h2>📅 板块每日涨跌幅排行 <span class="note">一年存档 · 90 个行业板块</span></h2>
     <div class="lab-ctrl">
       <select id="br-day-sel" style="min-width:210px"></select>
       <span class="note" id="br-note"></span>
@@ -264,7 +269,7 @@ textarea:focus{outline:none;border-color:#33415c}
 <div class="pane" id="p5">
   <div class="sec-desc" style="margin-bottom:10px">🧪 实验室是<b>你的</b>工作台：口径实验 / 预测立字 / 个股哨兵 / 复盘笔记 / 数据体检。个人数据仅存<b>本机浏览器</b>，不上传服务器；换设备可用 <b>S10 同步串</b>搬家，清除浏览器数据前请先导出备份。</div>
 
-  <section><h2>S10 · 数据互通 <span class="note">PC ↔ 手机搬家 · 同步串纯本地 · 不经过任何服务器</span></h2>
+  <section data-modtip="<b>个人数据跨设备搬家</b>：实验室数据只存各设备浏览器本机。<br>搬家三步：本机「生成同步串」（ASNT1. 开头）→ 复制 → 另一台设备粘贴「导入」。支持两种二维码。<br>⚠ 清除浏览器数据前务必先导出，否则本地数据全丢。"><h2>S10 · 数据互通 <span class="note">PC ↔ 手机搬家 · 同步串纯本地 · 不经过任何服务器</span></h2>
     <div class="sec-desc">实验室个人数据存在<b>各自设备</b>的浏览器里。跨设备搬家三步：本机点「📤 生成同步串」→ 复制 → 另一台设备粘贴到下面点「📥 导入」（手机微信里<b>长按输入框可粘贴</b>）。手机打开本系统：电脑上点「📱 本页链接二维码」用微信扫码直达，同链接同数据。</div>
     <div class="lab-ctrl">
       <button class="btn gold" id="s10-exp">📤 生成同步串</button>
@@ -278,11 +283,11 @@ textarea:focus{outline:none;border-color:#33415c}
     <div id="s10-qrbox" style="display:none;text-align:center;background:#fff;border-radius:10px;padding:12px 12px 8px;margin-top:10px;max-width:280px;margin-left:auto;margin-right:auto"></div>
   </section>
 
-  <section><h2>S11 · 情绪区间回测 <span class="note" id="s11-note">不同情绪区间下 大盘/题材 的未来盈亏概率</span></h2>
+  <section data-modtip="<b>情绪区间回测</b>：统计不同情绪分位区间下，未来 1/3/5 日大盘/题材/打板接力的盈亏概率。<br>支持 14 档分层：板位三档（高/中/低位板）、单兵假主线档、情绪×市场位置四象限交叉。<br>样本=存档期长度——30 日级注意过拟合，≥60 日再当规律。"><h2>S11 · 情绪区间回测 <span class="note" id="s11-note">不同情绪区间下 大盘/题材 的未来盈亏概率</span></h2>
     <div id="s11-body"></div>
   </section>
 
-  <section><h2>S3 · 每日复盘简报 <span class="note">build 管道自动生成 · 一键复制喂给任何 AI</span></h2>
+  <section data-modtip="<b>自动生成的每日复盘简报</b>：情绪读数/资金结构/题材动态/信号要点，build 管道产出、每日入档。<br>一键复制可直接喂给任何 AI 当复盘上下文；也可下载全部（Markdown）本地归档。"><h2>S3 · 每日复盘简报 <span class="note">build 管道自动生成 · 一键复制喂给任何 AI</span></h2>
     <div class="lab-ctrl">
       <select id="s3-day" style="min-width:150px"></select>
       <button class="btn gold" id="s3-copy">📋 复制本期</button>
@@ -291,7 +296,7 @@ textarea:focus{outline:none;border-color:#33415c}
     <div id="s3-box" style="background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px 16px;max-height:340px;overflow:auto"></div>
   </section>
 
-  <section><h2>S1 · 情绪权重实验室 <span class="note">拖动滑块实时重算 30 日情绪曲线 · 我的口径 vs 官方口径</span></h2>
+  <section data-modtip="<b>自定义情绪口径实验台</b>：拖动滑块改七因子权重，实时重算 30 日曲线与官方口径对比（相关系数+逐日差）。<br>预设=旧版四因子/剔除行业/纯资金流等口径速切；「保存为我的口径」持久化到本机。<br>批量扫描=205 组权重三维检验（方向胜率/IC/回撤）——30 日样本 IC 差 &lt;0.1 无实质差异，勿据此固化权重。"><h2>S1 · 情绪权重实验室 <span class="note">拖动滑块实时重算 30 日情绪曲线 · 我的口径 vs 官方口径</span></h2>
     <div class="sec-desc">官方公式 v4.3 七因子 = 净买(20%) + 家数比(10%) + 行业广度(20%) + 题材热度(10%) + 涨跌停对比(15%) + 封板质量(10%) + 量能(15%)。拖动滑块自定义权重，对比「我的口径」与官方口径的差异与相关性；预设可观察旧版四因子、剔除行业因子、纯资金流等口径的情绪走势。</div>
     <div class="lab-ctrl" id="s1-sliders" style="margin-bottom:8px"></div>
     <div class="lab-ctrl">
@@ -309,7 +314,7 @@ textarea:focus{outline:none;border-color:#33415c}
     <div id="s1-scan-body"></div>
   </section>
 
-  <section><h2>S2 · 预测追踪器 <span class="note">写下判断 · 到期自动结算 · 命中/打脸诚实记录</span></h2>
+  <section data-modtip="<b>预测立字为据</b>：写下「情绪会上行/震荡/下行」+ 期限（3/5/10 个交易日），到期自动按存档结算，诚实记录命中/打脸与累计胜率。<br>防事后诸葛亮——写的时候系统盖时间戳，到期前不可改。数据存本机。"><h2>S2 · 预测追踪器 <span class="note">写下判断 · 到期自动结算 · 命中/打脸诚实记录</span></h2>
     <div class="fc-form">
       <span style="font-size:12.5px;color:#c6cfdd">我判断情绪会</span>
       <span class="fc-dir" id="s2-dir">
@@ -326,12 +331,12 @@ textarea:focus{outline:none;border-color:#33415c}
     <div id="s2-list"></div>
   </section>
 
-  <section><h2>S4 · 题材族谱演化树 <span class="note">同日共现拓扑 · 动量着色 · 点击节点看族谱关联股</span></h2>
+  <section data-modtip="<b>题材共现拓扑图</b>：同日共同出现在强势股池的题材之间连边，节点大小=只数、颜色=动量方向。<br>点击节点在下方展开族谱关联股。用于识别主线/分支/轮动结构——主线题材通常居中心且连边密集。"><h2>S4 · 题材族谱演化树 <span class="note">同日共现拓扑 · 动量着色 · 点击节点看族谱关联股</span></h2>
     <div id="svg-gene"></div>
     <div id="s4-detail" style="margin-top:10px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:11px 14px"></div>
   </section>
 
-  <section><h2>S5 · 自选股情绪哨兵 <span class="note">盯住你的票在龙虎榜/题材榜的动静 · 本机存储</span></h2>
+  <section data-modtip="<b>自选股盯梢</b>：添加代码后自动监测四类信号——龙虎榜上榜/题材命中/资金异动/区间表现。<br>数据存本机 localStorage；配合顶部全局搜索使用（存档无收录的股票会回落到全市场K线库，5,573 只任意查）。"><h2>S5 · 自选股情绪哨兵 <span class="note">盯住你的票在龙虎榜/题材榜的动静 · 本机存储</span></h2>
     <div class="lab-ctrl">
       <input id="s5-input" list="s5-dl" placeholder="输入代码或名称，如 000498 / 山东路桥" style="flex:1;min-width:200px;background:#0e1320;color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:8px 11px;font-size:13px">
       <datalist id="s5-dl"></datalist>
@@ -341,7 +346,7 @@ textarea:focus{outline:none;border-color:#33415c}
     <div class="sec-desc" id="s5-empty" style="margin-top:8px"></div>
   </section>
 
-  <section><h2>S7 · 数据锚定复盘笔记 <span class="note">按交易日记录 · 一键锚定当日 KPI 快照 · 支持导出 Markdown</span></h2>
+  <section data-modtip="<b>按交易日写复盘笔记</b>：「锚定当日快照」自动把当日情绪/净买/最热题材插进正文——用数据锚定记忆，防止回忆失真。<br>时间线纵向浏览，支持导出 Markdown。存本机，S10 可搬家。"><h2>S7 · 数据锚定复盘笔记 <span class="note">按交易日记录 · 一键锚定当日 KPI 快照 · 支持导出 Markdown</span></h2>
     <div class="lab-ctrl">
       <select id="s7-day" style="min-width:180px"></select>
       <button class="btn gold" id="s7-anchor">📌 锚定当日快照</button>
@@ -354,11 +359,11 @@ textarea:focus{outline:none;border-color:#33415c}
     <div id="s7-timeline"></div>
   </section>
 
-  <section><h2>S9 · 休市日历史回顾 <span class="note">节前节后情绪对照 · 假期效应样本积累</span></h2>
+  <section data-modtip="<b>假期效应样本库</b>：自动对比每个休市窗口（周末/长假）前最后交易日 vs 后第一交易日的情绪与资金变化，积累「节前观望、节后……」之类的日历效应证据。"><h2>S9 · 休市日历史回顾 <span class="note">节前节后情绪对照 · 假期效应样本积累</span></h2>
     <div id="s9-box"></div>
   </section>
 
-  <section><h2>S6 · 数据健康面板 <span class="note">这套数据可信吗？ 新鲜度 / 完整性 / 覆盖率 / 公式审计</span></h2>
+  <section data-modtip="<b>数据体检报告</b>：新鲜度/完整性/覆盖率/公式审计等 8 项检查 + 评分环。<br>公式变更记录、历史回填修复、数据质量警示全部在这里公示——<b>先看这里再信数据</b>。"><h2>S6 · 数据健康面板 <span class="note">这套数据可信吗？ 新鲜度 / 完整性 / 覆盖率 / 公式审计</span></h2>
     <div class="kpis" id="s6-kpis"></div>
     <div id="s6-list"></div>
   </section>
@@ -862,6 +867,27 @@ window.__v43dbg = { divergence, topicStrength }; // 测试钩子（只读）
     });
     document.addEventListener('click',e=>{if(!e.target.closest('.search'))sug.classList.remove('on');});
   })();
+})();
+
+/* ═══ v4.8.2 模块悬停提示：凡带 data-modtip 的模块，鼠标悬停浮出说明 ═══ */
+(function(){
+  'use strict';
+  const tip=document.createElement('div');tip.id='modtip';document.body.appendChild(tip);
+  let cur=null,raf=0;
+  const place=e=>{
+    const r=tip.getBoundingClientRect(),vw=document.documentElement.clientWidth,vh=document.documentElement.clientHeight;
+    let x=e.clientX+14,y=e.clientY+16;
+    if(x+(r.width||300)>vw-8)x=Math.max(6,e.clientX-(r.width||300)-12);
+    if(y+(r.height||60)>vh-8)y=Math.max(6,e.clientY-(r.height||60)-12);
+    tip.style.left=x+'px';tip.style.top=y+'px';
+  };
+  document.addEventListener('mouseover',e=>{
+    const t=e.target.closest?e.target.closest('[data-modtip]'):null;
+    if(t){if(t!==cur){cur=t;tip.innerHTML=t.dataset.modtip;tip.classList.add('on');place(e);}}
+    else if(cur){cur=null;tip.classList.remove('on');}
+  },{passive:true});
+  document.addEventListener('mousemove',e=>{if(!cur||raf)return;raf=requestAnimationFrame(()=>{raf=0;place(e);});},{passive:true});
+  window.addEventListener('scroll',()=>{cur=null;tip.classList.remove('on');},{passive:true});
 })();
 
 /* ═══ 个股详情弹窗 ═══ */
