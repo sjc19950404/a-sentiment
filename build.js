@@ -96,6 +96,7 @@ const MODULES = [
   'lab-s3.js',
   'lab-s9.js',
   'lab-s11.js',
+  'lab-kline.js',
   'vendor/qrcode.min.js',
   'lab-sync.js',
   'lab-realtime.js'

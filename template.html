@@ -88,6 +88,21 @@ svg .pickable{cursor:pointer}
 #modal table{font-size:12px}
 #modal thead th{background:#1a2233;padding:6px 9px}
 #modal tbody td{padding:5px 9px}
+/* ── v4.8 全市场K线弹窗 ── */
+#kmodal-mask{position:fixed;inset:0;background:rgba(4,6,10,.72);backdrop-filter:blur(3px);z-index:120;display:none;align-items:flex-start;justify-content:center;overflow:auto;padding:40px 16px}
+#kmodal-mask.on{display:flex}
+#kmodal{background:#121826;border:1px solid #2a3550;border-radius:14px;max-width:860px;width:100%;padding:18px 20px;box-shadow:0 18px 60px rgba(0,0,0,.5)}
+#kmodal .km-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:10px;margin-bottom:10px}
+#kmodal .km-head b{font-size:18px}
+#kmodal .km-rng{display:flex;gap:6px}
+#kmodal .km-rng button{background:#1a2233;border:1px solid #2a3550;color:var(--dim);font-size:12px;padding:4px 12px;border-radius:7px;cursor:pointer}
+#kmodal .km-rng button:hover{color:#fff;border-color:#3b4a6b}
+#kmodal .km-rng button.on{background:#26314a;color:#fff;border-color:#4a5b80}
+#kmodal .km-close{margin-left:auto;cursor:pointer;color:var(--dim);font-size:20px;line-height:1;padding:2px 8px;border-radius:6px}
+#kmodal .km-close:hover{background:#1c2434;color:#fff}
+#kmodal .km-svg{width:100%;height:auto;display:block}
+#kmodal .km-meta{display:flex;gap:14px;flex-wrap:wrap;color:var(--faint);font-size:11.5px;margin-top:8px}
+.sug .ktag{font-style:normal;font-size:10px;color:#7aa2f7;border:1px solid #2a3a5c;border-radius:4px;padding:0 4px;margin-left:6px}
 footer{border-top:1px solid var(--line);margin-top:18px;padding:13px 4px 0;color:var(--faint);font-size:11.5px;line-height:1.9}
 footer b{color:var(--dim)}
 .warn{background:rgba(232,176,75,.08);border:1px solid rgba(232,176,75,.3);border-radius:10px;padding:10px 14px;color:var(--gold);font-size:12px;margin-bottom:12px}
@@ -154,7 +169,7 @@ textarea:focus{outline:none;border-color:#33415c}
     <span class="badge live" id="st-date"></span>
     <span class="badge" id="st-count"></span>
     <span class="badge">自动更新 交易日 15:35</span>
-    <div class="search"><span class="ico">🔍</span><input id="gs-input" placeholder="全局搜索：代码 / 名称（存档内个股）" autocomplete="off"><div class="sug" id="gs-sug"></div></div>
+    <div class="search"><span class="ico">🔍</span><input id="gs-input" placeholder="全局搜索：代码 / 名称（存档个股 + 全市场K线）" autocomplete="off"><div class="sug" id="gs-sug"></div></div>
   </div>
   <div class="hd-sub" id="st-sub"></div>
 </header>
@@ -821,19 +836,28 @@ window.__v43dbg = { divergence, topicStrength }; // 测试钩子（只读）
       clearTimeout(timer);
       const q=input.value.trim().toLowerCase();
       if(!q){sug.classList.remove('on');sug.innerHTML='';return;}
-      timer=setTimeout(()=>{
+      timer=setTimeout(async()=>{
         const hits=[...pool.entries()].filter(([c,n])=>c.includes(q)||n.toLowerCase().includes(q)).slice(0,8);
-        sug.innerHTML=hits.map(([c,n])=>`<div data-code="${c}"><span><b>${escHtml(n)}</b></span><span class="c num">${c}</span></div>`).join('')||'<div class="dim">无匹配（仅存档内个股可搜，点弹窗 ☆ 收藏后可在 S5 哨兵跟踪）</div>';
+        let html=hits.map(([c,n])=>`<div data-code="${c}"><span><b>${escHtml(n)}</b></span><span class="c num">${c}</span></div>`).join('');
+        if(hits.length<8&&window.__klineSearch){
+          try{
+            const kh=await window.__klineSearch(q);
+            html+=kh.filter(it=>!pool.has(it.c)).map(it=>`<div data-kcode="${escHtml(it.c)}" data-kname="${escHtml(it.n)}"><span><b>${escHtml(it.n)}</b><i class="ktag">全市场</i></span><span class="c num">${escHtml(it.c)}</span></div>`).join('');
+          }catch(e){}
+        }
+        sug.innerHTML=html||'<div class="dim">无匹配（存档个股 + 全市场K线库均未命中）</div>';
         sug.classList.add('on');
       },200);
     });
     sug.addEventListener('click',e=>{
+      const kel=e.target.closest('div[data-kcode]');
+      if(kel){sug.classList.remove('on');input.value='';window._openKline(kel.dataset.kcode,kel.dataset.kname);return;}
       const el=e.target.closest('div[data-code]');if(!el)return;
       sug.classList.remove('on');input.value='';
       window._openStock(el.dataset.code);
     });
     input.addEventListener('keydown',e=>{
-      if(e.key==='Enter'){const f=sug.querySelector('div[data-code]');if(f)f.click();}
+      if(e.key==='Enter'){const f=sug.querySelector('div[data-code],div[data-kcode]');if(f)f.click();}
       if(e.key==='Escape'){sug.classList.remove('on');input.blur();}
     });
     document.addEventListener('click',e=>{if(!e.target.closest('.search'))sug.classList.remove('on');});
