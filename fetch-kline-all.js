@@ -98,9 +98,11 @@ async function pacedLoop(items, worker) {
     if (done % 400 === 0) console.log('  进度 ' + done + '/' + items.length + ' · 失败 ' + errs.length + ' · 节奏 ' + pace + 'ms · 用时 ' + Math.round((Date.now() - t0) / 1000) + 's');
     if (ok) {
       failStreak = 0; okStreak++;
+      if (okStreak >= 50) coolN = 0;                                 // 连续成功 50 只 → 冷却级别归零（限流窗口可能已重置）
       if (okStreak % 300 === 0 && pace > paceBase) pace = Math.max(paceBase, Math.round(pace * 0.9));  // 成功 streak 达 300 → 缓慢收窄节奏
     } else {
       failStreak++; okStreak = 0;
+      if (failStreak >= 60) { console.log('⚠ 连续失败 ' + failStreak + ' → 判定行情源封禁，提前收工（已抓 ' + fresh + ' 只已分批提交，下次运行断点续跑）'); break; }
       if (failStreak >= 3) {                                     // 连续 3 失败 → 判定疑似限流，全局冷却
         coolN = Math.min(coolN + 1, 6);
         const pause = Math.min(15000 * Math.pow(2, coolN - 1), 480000);
@@ -172,8 +174,13 @@ async function runInit() {
   console.log('══ 回填完成: 新增 ' + fresh + ' · 已存在跳过 ' + skip + ' · 失败 ' + errs.length + ' ══');
   if (errs.length) {
     errs.slice(0, 5).forEach(e => console.error('  例:', e.item.c, e.msg));
-    gitCommitShards(fresh);                                   // 失败超限也先把已有进度提交落袋
-    if (errs.length > list.length * 0.1) { console.error('失败率超 10% → exit 1（已提交部分可断点续跑）'); process.exit(1); }
+    gitCommitShards(fresh);                                   // 有失败先提交落袋
+    if (errs.length > list.length * 0.1) {
+      console.error('⚠ 失败率超 10%（' + Math.round(errs.length / list.length * 100) + '%）——大概率被行情源限流。');
+      console.error('⚠ 本次已提交 ' + fresh + ' 只（分批 commit），剩余 ' + errs.length + ' 只待补。');
+      console.error('⚠ 按 exit 0 结束让提交步得以推送进度；请稍后再触发一次 kline_backfill 断点续跑补齐。');
+      process.exit(0);                                        // v4.8.3: 软失败——exit 1 会被 GitHub 跳过提交步，分批提交全废
+    }
   }
 }
 
