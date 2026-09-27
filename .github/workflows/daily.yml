@@ -7,7 +7,7 @@ on:
   workflow_dispatch:   # 手动首跑 / 补跑 / K线回填入口（Actions 页面右上角 Run workflow）
     inputs:
       kline_backfill:
-        description: '全市场K线历史回填（首次/补历史时勾选，约 15 分钟）'
+        description: '全市场K线历史回填（首次/补历史时勾选，约 30~60 分钟）'
         type: boolean
         default: false
 
@@ -23,7 +23,7 @@ concurrency:
 jobs:
   pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 120   # 回填 5,573 只实测远超预估（GitHub 出口到腾讯 CDN 延迟高），40 分钟被腰斩过一次
     env:
       TZ: Asia/Shanghai          # 进程时区对齐北京
       SENT_SITE_DIR: /tmp/sent-site   # 绕开 Windows 硬编码发布目录（Linux 无 C:\）
