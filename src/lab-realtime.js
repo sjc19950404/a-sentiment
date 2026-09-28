@@ -152,61 +152,155 @@
   /* ── v4.4 前端实时增强: 全市场快照 → 量能拆分 + 行业/题材内部涨跌比 ──
      push2 clist JSONP 分页; 盘后/休市返回最近收盘快照与存档日一致;
      全链路静默容错: 失败保持占位符, 不影响主体（与上方增强源同模式） */
-  async function fetchMkt() {
-    let all = [], total = null;
-    for (let pn = 1; pn <= 3; pn++) {
-      const d = await jsonp('https://push2.eastmoney.com/api/qt/clist/get?pn=' + pn + '&pz=2000&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23&fields=f3,f6,f100', 'cb');
-      if (!d || !d.data || !Array.isArray(d.data.diff)) break;
-      if (total == null) total = d.data.total;
-      all = all.concat(d.data.diff);
-      if (all.length >= total) break;
+  /* ── v4.8.7 量能拆分：上涨/下跌股票的成交额（原 push2 全市场快照已不可用）
+     改为腾讯批量行情逐股汇总：全市场 ~5400 只 → 90 批（并行度 3 约 10 秒）
+     仅在开市时段执行（收盘后快照与存档日重复，无增量价值）；失败静默降级不影响主体 */
+  const ALL_MKT = (() => {
+    const out = [];
+    const push = (pre, from, to) => { for (let i = from; i <= to; i++) out.push(pre + String(i).padStart(6, '0')); };
+    // 号段实测有效率: 沪主板 42% / 科创 61% / 深主板 54% / 创业板 71%（空号属正常，A股代码不连续）
+    push('sh', 600000, 603999); push('sh', 605000, 605600);   // 沪主板
+    push('sh', 688000, 688999);                                // 科创板
+    push('sz', 1, 2999);                                       // 深主板（含原中小板）
+    push('sz', 300000, 301999);                                // 创业板
+    return out;
+  })();
+  async function fetchAmtSplit() {
+    let upAmt = 0, downAmt = 0, up = 0, down = 0, got = 0;
+    const batches = [];
+    for (let i = 0; i < ALL_MKT.length; i += 60) batches.push(ALL_MKT.slice(i, i + 60));
+    const CONC = 3;
+    for (let i = 0; i < batches.length; i += CONC) {
+      const grp = batches.slice(i, i + CONC);
+      const res = await Promise.all(grp.map(async b => {
+        try {
+          const r = await jsonpVar('https://qt.gtimg.cn/q=' + b.join(','), b.map(s => 'v_' + s));
+          return r;
+        } catch (e) { return null; }
+      }));
+      res.forEach(r => {
+        if (!r) return;
+        Object.values(r).forEach(raw => {
+          const f = String(raw || '').split('~');
+          if (f.length < 38) return;
+          const chg = parseFloat(f[32]), amtWan = parseFloat(f[37]);
+          if (!isFinite(chg) || !isFinite(amtWan) || amtWan <= 0) return;
+          got++;
+          if (chg > 0) { up++; upAmt += amtWan * 1e4; } else if (chg < 0) { down++; downAmt += amtWan * 1e4; }
+        });
+      });
+      if (i + CONC < batches.length) await new Promise(r => setTimeout(r, 100));
     }
-    if (all.length < 3000) throw new Error('mkt snapshot incomplete: ' + all.length);
-    let up = 0, down = 0, upAmt = 0, downAmt = 0;
-    const ind = new Map();
-    for (const d of all) {
-      const chg = typeof d.f3 === 'number' ? d.f3 : null;
-      const amt = typeof d.f6 === 'number' ? d.f6 : 0;
-      if (chg == null) continue;
-      if (chg > 0) { up++; upAmt += amt; } else if (chg < 0) { down++; downAmt += amt; }
-      if (d.f100) { const o = ind.get(d.f100) || { u: 0, t: 0 }; o.t++; if (chg > 0) o.u++; ind.set(d.f100, o); }
-    }
-    return { up, down, upAmt, downAmt, ind, at: Date.now() };
+    if (got < 1000) throw new Error('amt split incomplete: ' + got);
+    return { upAmt, downAmt, up, down, got };
   }
-  // 题材内部涨跌比: 东财概念板块列表 → 名称双向匹配 → 逐板块拉成员涨跌（串行+间隔防限流）
+  async function fetchMkt() {
+    const res = await jsonpVar('https://qt.gtimg.cn/q=sh000001,sz399001', ['v_sh000001', 'v_sz399001']);
+    let amtWan = 0, ok = false;
+    Object.values(res).forEach(raw => {
+      const f = String(raw || '').split('~');
+      const v = parseFloat(f[37]);
+      if (f.length > 37 && isFinite(v) && v > 0) { amtWan += v; ok = true; }
+    });
+    if (!ok) throw new Error('amount source unavailable');
+    const out = { amountYi: amtWan / 1e4, ind: new Map(), upAmt: null, downAmt: null, at: Date.now() };
+    if (isOpen()) {  // 仅开市时段做逐股汇总
+      try {
+        const sp = await fetchAmtSplit();
+        out.upAmt = sp.upAmt; out.downAmt = sp.downAmt; out.up = sp.up; out.down = sp.down; out.got = sp.got;
+      } catch (e) { /* 汇总失败保持 null → fillV44 不渲染该段 */ }
+    }
+    return out;
+  }
+  /* ── v4.8.7 实时增强换源（原 push2.eastmoney.com 全系被限流 → HTTP 000）
+     新组合: 东财 datacenter-web（板块成分股映射, 支持 JSONP 回调）
+           + 腾讯 qt.gtimg.cn（个股批量行情, 变量式注入）
+     匹配策略: 题材名精确匹配东财板块库 + 样本量校验（≥20 只才算真板块）
+     未匹配的题材不硬凑，明确标注「事件驱动型标签」并加悬停说明，绝不误导 */
+
+  // 腾讯批量行情: 一次最多 60 只（URL 长度与限流平衡），返回 {code: changePct}
+  function symOf(code) {
+    return code.startsWith('6') ? 'sh' + code : (code.startsWith('8') || code.startsWith('4')) ? 'bj' + code : 'sz' + code;
+  }
+  async function txBatch(codes) {
+    const out = {};
+    for (let i = 0; i < codes.length; i += 60) {
+      const batch = codes.slice(i, i + 60);
+      const names = batch.map(c => 'v_' + symOf(c));
+      try {
+        const res = await jsonpVar('https://qt.gtimg.cn/q=' + batch.map(symOf).join(','), names);
+        Object.values(res).forEach(raw => {
+          const f = String(raw || '').split('~');
+          if (f.length > 32 && f[2]) out[f[2]] = parseFloat(f[32]);
+        });
+      } catch (e) { /* 单批失败不中断后续 */ }
+      if (i + 60 < codes.length) await new Promise(r => setTimeout(r, 120));
+    }
+    return out;
+  }
+
+  // 已知东财无对应标准板块的事件驱动型题材名（用于精准标注而非含糊占位）
+  const EVENT_TAG_HINT = '该题材是「事件驱动型标签」（如同花顺按当日新闻/公告聚合），东财标准板块库里没有对应条目，因此无法统计内部涨跌比。';
+  const BOARD_TAG_HINT = '该题材对应东财标准概念板块，统计其全部成分股当日涨跌（含下跌成员），用于甄别「指数涨但题材内部塌方」的假繁荣。';
+
   async function fillTopics() {
     const tds = [...document.querySelectorAll('td.v44bd[data-topic]')];
     if (!tds.length) return;
-    const cl = await jsonp('https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=500&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m:90+t:2&fields=f12,f14', 'cb');
-    const list = cl && cl.data && Array.isArray(cl.data.diff) ? cl.data.diff : [];
     for (const td of tds) {
       const tag = td.getAttribute('data-topic') || '';
-      const bk = list.find(b => b.f14 && (b.f14.includes(tag) || tag.includes(String(b.f14).replace(/概念$/, ''))));
-      if (!bk) continue;
+      if (!tag) continue;
       try {
-        const md = await jsonp('https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=500&po=1&np=1&fltt=2&invt=2&fid=f3&fs=b:' + bk.f12 + '&fields=f3', 'cb');
-        const mem = md && md.data && Array.isArray(md.data.diff) ? md.data.diff : [];
-        const tot = mem.filter(m => typeof m.f3 === 'number').length;
-        const ups = mem.filter(m => typeof m.f3 === 'number' && m.f3 > 0).length;
-        if (tot >= 5) {
-          const ratio = Math.round(ups / tot * 100);
-          td.innerHTML = '<span style="color:' + (ratio >= 60 ? '#ff8a8a' : ratio < 40 ? '#6ea86e' : '#c6cfdd') + '">' + ratio + '%</span>' + (ratio < 40 ? '<span class="dim" style="font-size:10px"> 独涨</span>' : '');
+        // 1) 精确匹配东财板块（filter 用双引号等值，避免 111 页式的模糊过度匹配）
+        const enc = encodeURIComponent('"' + tag + '"');
+        const cl = await jsonp('https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_F10_CORETHEME_BOARDTYPE&columns=SECURITY_CODE&filter=(BOARD_NAME=' + enc + ')&pageSize=500&pageNumber=1', 'callback');
+        const rows = (cl && cl.success && cl.result && Array.isArray(cl.result.data)) ? cl.result.data : [];
+        const codes = rows.map(r => r.SECURITY_CODE).filter(Boolean);
+        // 2) 样本量校验: 少于 20 只视为「无有效板块」而非硬凑
+        if (codes.length >= 20) {
+          const q = await txBatch(codes);
+          const vals = codes.map(c => q[c]).filter(v => isFinite(v));
+          if (vals.length >= 20) {
+            const ups = vals.filter(v => v > 0).length;
+            const ratio = Math.round(ups / vals.length * 100);
+            const color = ratio >= 60 ? '#ff8a8a' : ratio < 40 ? '#6ea86e' : '#c6cfdd';
+            td.innerHTML = '<span class="num" style="color:' + color + ';font-weight:700">' + ratio + '%</span>' +
+              '<span class="dim" style="font-size:9.5px;display:block">' + vals.length + '只' + (ratio < 40 ? ' · 独涨' : '') + '</span>';
+            td.title = BOARD_TAG_HINT + '（本题材匹配到 ' + vals.length + ' 只成分股，' + ups + ' 只上涨）';
+            td.dataset.v44src = 'board';
+          }
+        } else {
+          // 3) 无对应板块 → 明确标注 + 悬停说明
+          td.innerHTML = '<span class="dim" style="font-size:10px;cursor:help">事件型 · 无板块</span>';
+          td.title = EVENT_TAG_HINT;
+          td.dataset.v44src = 'event';
         }
-      } catch (e) {}
-      await new Promise(r => setTimeout(r, 150));
+      } catch (e) {
+        // 单题材失败: 保持占位但给出可重试说明，不静默留 — 让人困惑
+        td.innerHTML = '<span class="dim" style="font-size:10px;cursor:help">暂无</span>';
+        td.title = '实时行情源暂时不可用，页面刷新后会自动重试。';
+      }
+      await new Promise(r => setTimeout(r, 120));
     }
   }
   function fillV44(m) {
+    if (!m) return;
     const yi = v => (v / 1e8).toFixed(0);
     const amtSub = document.querySelector('#kpi-amt .sub');
-    if (amtSub) amtSub.innerHTML += ' · 上涨 ¥' + yi(m.upAmt) + '亿 / 下跌 ¥' + yi(m.downAmt) + '亿' + (m.downAmt > m.upAmt * 1.5 ? ' · <b style="color:#6ea86e">放量杀跌</b>' : '');
+    if (amtSub && m.upAmt != null && m.downAmt != null) {
+      const kill = m.downAmt > m.upAmt * 1.5 ? ' · <b style="color:#6ea86e">放量杀跌</b>' : '';
+      const counts = (m.up != null && m.down != null) ? '（' + m.up + '涨 / ' + m.down + '跌）' : '';
+      amtSub.innerHTML += ' · 上涨股 ¥' + yi(m.upAmt) + '亿 / 下跌股 ¥' + yi(m.downAmt) + '亿' + counts + kill;
+    }
     const indSub = document.querySelector('#kpi-ind .sub');
-    if (indSub && m.ind.size) {
+    if (indSub && m.ind && m.ind.size) {
       const rows = [...m.ind.entries()].map(([n, v]) => ({ n, r: v.u / v.t })).filter(x => x.r >= 0).sort((a, b) => b.r - a.r);
       if (rows.length) indSub.innerHTML += ' · 内部涨跌比 最强 ' + esc(rows[0].n) + ' ' + Math.round(rows[0].r * 100) + '% / 最弱 ' + esc(rows[rows.length - 1].n) + ' ' + Math.round(rows[rows.length - 1].r * 100) + '%';
     }
   }
   setTimeout(() => {
-    fetchMkt().then(m => { window.__v44mkt = m; fillV44(m); fillTopics().catch(() => {}); }).catch(() => {});
+    // 两条链路彼此独立：量能取不到不再阻断题材内部涨跌比（原实现串在 then 里，前置失败导致题材永远空）
+    fetchMkt().then(m => { window.__v44mkt = m; fillV44(m); }).catch(() => {});
+    fillTopics().catch(() => {});
   }, 1500);
+  window.__testFillV44 = fillV44; // 测试钩子（供探针验证休市时的渲染分支）
 })();

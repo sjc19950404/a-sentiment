@@ -616,7 +616,7 @@ window.__v43dbg = { divergence, topicStrength }; // 测试钩子（只读）
   const tt=topTopics(CUR,15);
   $id('svg-topics').appendChild(barh(tt,{val:t=>t.count,label:t=>t.tag,vfmt:v=>v+' 只',color:()=>UP,hi:i=>i<3,padL:150,padR:70,padB:18,onpick:t=>_openTopic(t.tag)}));
   // 题材强度表
-  $id('tbl-tstrength').innerHTML='<thead><tr><th class="l">强度</th><th class="l">题材</th><th>只数</th><th>均涨幅</th><th>均换手</th><th>榜上净买</th><th>连续</th><th>内部涨跌比</th></tr></thead><tbody>'+
+  $id('tbl-tstrength').innerHTML='<thead><tr><th class="l">强度</th><th class="l">题材</th><th>只数</th><th>均涨幅</th><th>均换手</th><th>榜上净买</th><th>连续</th><th title="对应东财标准概念板块时，统计其全部成分股当日涨跌（含下跌成员），用于甄别「指数涨但题材内部塌方」的假繁荣；事件驱动型标签无对应板块，标注为「事件型 · 无板块」">内部涨跌比 <span class="dim" style="font-weight:400">ⓘ</span></th></tr></thead><tbody>'+
     topicStrength(CUR).map((o,i)=>`<tr><td class="l"><span class="num" style="font-weight:700;color:${i<3?GOLD:'#d7dee9'}">${o.score}</span><span class="dim" style="font-size:10.5px"> 分</span></td><td class="l"><span class="tag${i<3?' hot':''}" style="cursor:pointer" onclick="_openTopic('${o.tag}')" title="点我看该题材成分股">${o.tag}</span></td><td class="num">${o.count}</td><td class="num ${cls(o.avg_zf)}">${pct(o.avg_zf)}</td><td class="num">${o.avg_hs.toFixed(2)}%</td><td class="num ${cls(o.net)}">${o.net?fmtW(o.net):'—'}</td><td class="num dim">${o.streak} 天${o.streak>=3?' ⚡':''}</td><td class="num v44bd" data-topic="${o.tag}" title="板块成分股内上涨占比（实时抓取, 甄别单兵龙头假主线）">—</td></tr>`).join('')+'</tbody>';
   const ind=CUR.industry||[];
   $id('ind-note').textContent=(ind.length)+' 个板块 · 涨跌榜由板块日K重建';
