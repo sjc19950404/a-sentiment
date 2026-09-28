@@ -164,6 +164,12 @@
     return out;
   };
 
+  // ── 对内扩展接口（v4.8.8: S8 统计研判 / S6 健康面板按需取用分片库）──
+  // __klineShard(code) → Promise<{c,n,bars,day}>，bars=[[日期,开,收,高,低,量],...]，收盘价取 b[2]（file:// 下 reject）
+  // __klineList() → Promise<{codes:[{c,n}],generatedAt,day,offline?}>（file:// 下返回 offline 空清单）
+  window.__klineShard = getShard;
+  window.__klineList = getList;
+
   // ── S6 健康面板异步状态行（清单就绪后插入）──
   function _s6Touch(st) {
     const el = document.getElementById('s6-list');

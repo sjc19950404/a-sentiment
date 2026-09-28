@@ -83,9 +83,11 @@ const PATCHES = [
   [DESC_OLD, DESC_NEW]
 ];
 
-// ── v3: 实验室模块拼接（显式清单，顺序敏感: lab-core 必须最先，s8 需在核心 _openStock 之后；vendor 必须在 lab-sync 前）──
+// ── v3: 实验室模块拼接（显式清单，顺序敏感: lab-core 必须最先；lab-kline 须在 s6/s8 前——s6 的 IIFE
+//    同步检查 window.__klineList 注册异步覆盖口径；s8 运行时检查 __klineShard；vendor 必须在 lab-sync 前）──
 const MODULES = [
   'lab-core.js',
+  'lab-kline.js',
   'lab-s1.js',
   'lab-s2.js',
   'lab-s5.js',
@@ -96,7 +98,6 @@ const MODULES = [
   'lab-s3.js',
   'lab-s9.js',
   'lab-s11.js',
-  'lab-kline.js',
   'vendor/qrcode.min.js',
   'lab-sync.js',
   'lab-realtime.js'

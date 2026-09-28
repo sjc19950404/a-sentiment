@@ -62,7 +62,7 @@
     });
   }
 
-  // ── 6. K线覆盖 ──
+  // ── 6. K线覆盖（v4.8.8: 同步先按页面注入池口径渲染，分片库清单就绪后异步升级为全市场口径）──
   let poolCodes = new Set();
   DAYS.forEach(d => {
     (d.lhb_aggr || d.lhb || []).forEach(s => poolCodes.add(s.code));
@@ -70,11 +70,12 @@
   });
   const withK = [...poolCodes].filter(c => D.stocks[c] && D.stocks[c].closes && D.stocks[c].closes.length > 3).length;
   const cover = poolCodes.size ? Math.round(withK / poolCodes.size * 100) : 0;
-  items.push({
+  const klineItem = {
     name: 'K线覆盖', st: cover >= 90 ? 'ok' : cover >= 60 ? 'warn' : 'bad',
-    desc: `${withK}/${poolCodes.size} 只（${cover}%）在榜/强势股有腾讯日K · 无K线个股详情仍可见（榜记录兜底）`,
-    score: Math.round(cover / 100 * 13), full: 13
-  });
+    desc: `${withK}/${poolCodes.size} 只（${cover}%）在页面注入K线池 · 全市场分片库校验中…`,
+    score: Math.round(cover / 100 * 13), full: 13, klineRow: true
+  };
+  items.push(klineItem);
 
   // ── 7. 交易日历与缺口 ──
   {
@@ -112,14 +113,23 @@
     });
   }
 
-  // ── 渲染 ──
-  const total = items.reduce((a, i) => a + i.score, 0), full = items.reduce((a, i) => a + i.full, 0);
-  const score = Math.round(total / full * 100);
-  const stCnt = { ok: 0, warn: 0, bad: 0 };
-  items.forEach(i => stCnt[i.st]++);
+  // ── 渲染（v4.8.8: 行模板/总环抽函数——K线覆盖异步升级后可就地替换并重算健康分）──
+  const rowHtml = i => `
+    <div class="hl-row"${i.klineRow ? ' data-s6-kline="1"' : ''}>
+      <div style="min-width:0">
+        <div style="font-size:13px;font-weight:700;color:#c6cfdd">${i.name} <span class="dim" style="font-weight:400;font-size:11px">+${i.score}/${i.full}</span></div>
+        <div style="font-size:12px;color:var(--dim);margin-top:2px;line-height:1.6">${i.desc}</div>
+      </div>
+      <span class="hl-st ${i.st === 'ok' ? 'hl-ok' : i.st === 'warn' ? 'hl-warn' : 'hl-bad'}">${i.st === 'ok' ? '✓ 正常' : i.st === 'warn' ? '⚠ 提醒' : '✗ 异常'}</span>
+    </div>`;
 
-  // 评分环
-  (function ring() {
+  function renderSummary() {
+    const total = items.reduce((a, i) => a + i.score, 0), full = items.reduce((a, i) => a + i.full, 0);
+    const score = Math.round(total / full * 100);
+    const stCnt = { ok: 0, warn: 0, bad: 0 };
+    items.forEach(i => stCnt[i.st]++);
+
+    // 评分环
     const R = 30, C = 2 * Math.PI * R, off = C * (1 - score / 100);
     const col = score >= 80 ? '#2fbf8f' : score >= 55 ? '#e8b04b' : '#ff5a5a';
     const svg = el('svg', { viewBox: '0 0 90 90', style: 'width:86px;height:86px;flex-shrink:0' });
@@ -137,16 +147,26 @@
       <div class="kpi"><div class="lab">最后存档</div><div class="val num" style="font-size:17px">${CUR.trade_date}</div><div class="sub">共 ${DAYS.length} 个交易日</div></div>
       <div class="kpi"><div class="lab">清洗版本</div><div class="val" style="font-size:14px">${(META.cleanedBy || 'v1').replace('build/', '')}</div><div class="sub">清洗于 ${(META.cleanedAt || '').slice(0, 10)}</div></div>`;
     $id('s6-kpis').querySelector('[data-ring]').appendChild(svg);
-  })();
+  }
+  renderSummary();
 
-  $id('s6-list').innerHTML = items.map(i => `
-    <div class="hl-row">
-      <div style="min-width:0">
-        <div style="font-size:13px;font-weight:700;color:#c6cfdd">${i.name} <span class="dim" style="font-weight:400;font-size:11px">+${i.score}/${i.full}</span></div>
-        <div style="font-size:12px;color:var(--dim);margin-top:2px;line-height:1.6">${i.desc}</div>
-      </div>
-      <span class="hl-st ${i.st === 'ok' ? 'hl-ok' : i.st === 'warn' ? 'hl-warn' : 'hl-bad'}">${i.st === 'ok' ? '✓ 正常' : i.st === 'warn' ? '⚠ 提醒' : '✗ 异常'}</span>
-    </div>`).join('');
+  $id('s6-list').innerHTML = items.map(rowHtml).join('');
+
+  // v4.8.8: K线覆盖升级——全市场分片库清单就绪后按库口径重算（替换行 + 重算总环健康分）
+  if (typeof window.__klineList === 'function') {
+    window.__klineList().then(l => {
+      if (!l || l.offline || !l.codes || !l.codes.length) return; // 分片库不可达 → 保留注入池口径
+      const shardBare = new Set(l.codes.map(x => String(x.c).replace(/^[a-z]+/, '')));
+      const inShard = [...poolCodes].filter(c => shardBare.has(c)).length;
+      const cover2 = poolCodes.size ? Math.round(inShard / poolCodes.size * 100) : 0;
+      klineItem.st = cover2 >= 90 ? 'ok' : cover2 >= 60 ? 'warn' : 'bad';
+      klineItem.score = Math.round(cover2 / 100 * 13);
+      klineItem.desc = `${inShard}/${poolCodes.size} 只（${cover2}%）已被全市场K线库覆盖（v4.8 · ${l.codes.length} 只沪深A股分片 · 清单 ${l.generatedAt || '—'}）· S8 统计研判趋势/位置维度自动取用分片K线（4 维口径）`;
+      const row = document.querySelector('[data-s6-kline]');
+      if (row) row.outerHTML = rowHtml(klineItem);
+      renderSummary();
+    }).catch(() => {});
+  }
 
   // ── v4.6 能力标记（不参与健康评分 · 新增能力自检清单）──
   const capFn = {
