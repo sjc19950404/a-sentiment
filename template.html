@@ -691,7 +691,8 @@ window.__v43dbg = { divergence, topicStrength }; // 测试钩子（只读）
     $id('tbl-verif').innerHTML='<thead><tr><th class="l">核验项</th><th>模型值</th><th>外部/复算值</th><th>差值</th><th>方式</th><th>状态</th></tr></thead><tbody>'+
       v.items.map(it=>`<tr><td class="l">${it.label}</td><td class="num">${it.model??'—'}</td><td class="num">${it.ext??'—'}</td><td class="num">${it.delta==null?'—':(it.delta>0?'+':'')+it.delta}</td><td class="l"><span class="dim" style="font-size:11.5px">${srcShort[it.src]||it.src}</span></td><td style="color:${it.pass?'var(--accent)':'var(--up)'};font-weight:700" title="${it.pass?'差值在容差内':(it.ext==null?'外部源未取到':'差值超容差, 多为口径差异')}">${it.pass?'✓':'✗'}</td></tr>`).join('')+'</tbody>';
     const np=v.items.filter(i=>i.pass).length, nt=v.items.length, fails=v.items.filter(i=>!i.pass);
-    $id('verif-note').textContent=`${v.checkedAt?v.checkedAt.slice(0,16).replace('T',' '):''} · ${np}/${nt} 项通过`;
+    const ct=v.checkedAt?(()=>{try{return new Date(v.checkedAt).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).replace(/\//g,'-');}catch(_){return v.checkedAt.slice(0,16).replace('T',' ');}})():'';
+    $id('verif-note').textContent=`${ct} · ${np}/${nt} 项通过`;
     $id('verif-desc').textContent=!fails.length
       ? '✅ 总结：外部交叉核验全部通过——三大指数（新浪 vs 腾讯双源）、涨跌停/炸板池（同花顺 vs 东财双源）完全一致，龙虎榜汇总与七因子情绪公式复算自洽，当日数字可信。'
       : '⚠ 总结：'+fails.map(f=>f.label).join('、')+(fails.some(f=>f.ext==null)?' 外部源未取到（临时不可用）；':' 差值超容差（多为统计口径差异，非计算错误）；')+'其余 '+np+' 项通过。';
