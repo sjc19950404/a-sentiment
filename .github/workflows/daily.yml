@@ -4,10 +4,21 @@ on:
   schedule:
     # UTC 10:30 = 北京时间 18:30（周一至五）；GitHub 定时触发可能有数分钟~半小时延迟
     - cron: '30 10 * * 1-5'
+  push:
+    # 代码推送 = 纯前端重建发布（不含抓取，不依赖当日行情是否已公布）
+    # 排除管道自身的 data 提交，避免抓取→提交→再触发构建的循环
+    branches: [main]
+    paths-ignore:
+      - 'data.json'
+      - 'kline/**'
   workflow_dispatch:   # 手动首跑 / 补跑 / K线回填入口（Actions 页面右上角 Run workflow）
     inputs:
       kline_backfill:
         description: '全市场K线历史回填（首次/补历史时勾选，约 30~60 分钟）'
+        type: boolean
+        default: false
+      build_only:
+        description: '仅重建发布（不抓取数据；改前端代码后用）'
         type: boolean
         default: false
 
@@ -34,13 +45,26 @@ jobs:
         with:
           node-version: '22'
 
+      - name: 判定运行模式（push / build_only → 纯构建发布，不抓数据）
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.build_only }}" = "true" ]; then
+            echo "skip_fetch=true" >> "$GITHUB_OUTPUT"
+            echo "模式: 纯构建发布（跳过抓取）"
+          else
+            echo "skip_fetch=false" >> "$GITHUB_OUTPUT"
+            echo "模式: 完整管道（抓取 → 入档 → 构建 → 发布）"
+          fi
+
       - name: 每日抓取入档（非交易日 / 已在档自动幂等退出）
+        if: steps.mode.outputs.skip_fetch != 'true'
         run: |
           node fetch-daily.js 2>&1 | tee /tmp/fetch.log
           exit ${PIPESTATUS[0]}
 
       - name: 幂等门控（假日 / 已入档 → 跳过构建与发布，不空转）
         id: gate
+        if: steps.mode.outputs.skip_fetch != 'true'
         run: |
           if grep -qE "已在存档|无新交易日" /tmp/fetch.log; then
             echo "updated=false" >> "$GITHUB_OUTPUT"
@@ -48,12 +72,13 @@ jobs:
             echo "updated=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # 纯构建发布模式下（代码推送），门控视为 true 直接发布
       - name: 重建产物（含 kline 分片拷贝）
-        if: steps.gate.outputs.updated == 'true' || inputs.kline_backfill == true
+        if: steps.mode.outputs.skip_fetch == 'true' || steps.gate.outputs.updated == 'true' || inputs.kline_backfill == true
         run: node build.js
 
       - name: 全市场K线增量（追加当日 bar，停牌自动跳过）
-        if: steps.gate.outputs.updated == 'true'
+        if: steps.mode.outputs.skip_fetch != 'true' && steps.gate.outputs.updated == 'true'
         run: node fetch-kline-all.js
 
       - name: 全市场K线历史回填（仅手动勾选时执行）
@@ -61,7 +86,7 @@ jobs:
         run: node fetch-kline-all.js --init
 
       - name: 提交 data.json + kline 回仓库（数据持久化，永不丢失）
-        if: steps.gate.outputs.updated == 'true' || inputs.kline_backfill == true
+        if: steps.mode.outputs.skip_fetch != 'true' && (steps.gate.outputs.updated == 'true' || inputs.kline_backfill == true)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -70,15 +95,15 @@ jobs:
           git push   # 分批提交可能已产生 commit，此处统一推送；无新提交时输出 Everything up-to-date 仍算成功
 
       - name: 配置 Pages
-        if: steps.gate.outputs.updated == 'true' || inputs.kline_backfill == true
+        if: steps.mode.outputs.skip_fetch == 'true' || steps.gate.outputs.updated == 'true' || inputs.kline_backfill == true
         uses: actions/configure-pages@v5
 
       - name: 上传产物
-        if: steps.gate.outputs.updated == 'true' || inputs.kline_backfill == true
+        if: steps.mode.outputs.skip_fetch == 'true' || steps.gate.outputs.updated == 'true' || inputs.kline_backfill == true
         uses: actions/upload-pages-artifact@v3
         with:
           path: dist
 
       - name: 发布到 GitHub Pages
-        if: steps.gate.outputs.updated == 'true' || inputs.kline_backfill == true
+        if: steps.mode.outputs.skip_fetch == 'true' || steps.gate.outputs.updated == 'true' || inputs.kline_backfill == true
         uses: actions/deploy-pages@v4
