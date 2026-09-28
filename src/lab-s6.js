@@ -57,7 +57,7 @@
     const emptyT = DAYS.filter(d => !(d.topics || []).length).length;
     items.push({
       name: '题材归因完整性', st: emptyT ? 'bad' : 'ok',
-      desc: emptyT ? emptyT + ' 天为空!' : '30 天齐全 · 每日题材词频由强势股归因拆分聚合',
+      desc: emptyT ? emptyT + ' 天为空!' : '30 天齐全 · 题材词典归一+个股数聚合（v4.9：一票一题材一票 · 专属诱因黑名单 · 跨≥2只阈值）',
       score: emptyT ? 0 : 10, full: 10
     });
   }
@@ -110,6 +110,25 @@
         ? `仅 ${okN}/${judged} 天可由公式复现（${skipN} 天缺字段跳过），异常: ${bad.slice(0, 4).join(' ')}${bad.length > 4 ? ' …' : ''}`
         : `${okN}/${judged} 天可由官方公式复现${skipN ? `（${skipN} 天缺子指标跳过）` : ''} · 审计发现: 实际实现为「行业因子以中性值 50 补位参与加权」（仅当行业源失效时触发；当前源正常，广度取真实值）——S1 实验室把行业权重调 0 即可得到去行业因子口径`,
       score: bad.length ? 5 : 10, full: 10
+    });
+  }
+
+  // ── 9. 情绪因子补位审计（v4.9: 补位不再静默——显性计数, 超阈值标红; 情绪卡同步标注「⚠ n/7 因子补位」）──
+  {
+    const days = DAYS.map(d => {
+      const m = (d.summary && d.summary._missing) || [];
+      let n = 0; m.forEach(x => { if (x === 'pools') n += 2; else n += 1; }); // pools 缺 = s_zdt+s_zbl 两因子
+      return { date: d.trade_date, n, tags: m };
+    }).filter(x => x.n > 0);
+    const worst = days.length ? days.reduce((a, b) => (b.n > a.n ? b : a)) : null;
+    const st = !days.length ? 'ok' : (worst.n >= 3 || days.length > DAYS.length * 0.4 ? 'bad' : 'warn');
+    items.push({
+      name: '情绪因子补位', st,
+      desc: !days.length
+        ? DAYS.length + ' 天全部七因子真实数据 · 无中性 50 补位'
+        : days.length + '/' + DAYS.length + ' 天有补位因子（pools 缺失按 2 因子计）· 最重 ' + worst.date +
+          ' 补 ' + worst.n + '/7（' + (worst.tags.join('、') || '—') + '）· 补位以中性值 50 参与加权, 情绪卡已标注可信度',
+      score: !days.length ? 10 : (days.length <= Math.ceil(DAYS.length * 0.2) ? 6 : 0), full: 10
     });
   }
 

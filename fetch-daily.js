@@ -41,6 +41,15 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const r2 = v => Math.round(v * 100) / 100;
 const r1 = v => Math.round(v * 10) / 10;
 
+// ── v4.9 通用重试退避: 覆盖裸请求源（龙虎榜/池）。getharden/指数/行业日K 已有内建重试 ──
+async function withRetry(fn, tries = 3, backoff = 800) {
+  let err;
+  for (let i = 0; i < tries; i++) {
+    try { return await fn(); } catch (e) { err = e; if (i < tries - 1) await sleep(backoff * (i + 1)); }
+  }
+  throw err;
+}
+
 // ── 源1: 同花顺强势股（兼交易日探测: data[0].date 即最近交易日）──
 async function fetchHot() {
   for (let att = 0; att < 3; att++) {
@@ -65,8 +74,11 @@ async function fetchLhb(date) {
   while (page <= 5) {
     const url = 'https://datacenter-web.eastmoney.com/api/data/v1/get?pageSize=200&pageNumber=' + page +
       '&reportName=RPT_DAILYBILLBOARD_DETAILSNEW&columns=ALL&filter=(TRADE_DATE%3D%27' + date + '%27)';
-    const r = await fetch(url, { headers: { 'User-Agent': UA, Referer: 'https://data.eastmoney.com/' } });
-    const j = await r.json();
+    // v4.9: 页内 3 次重试退避（注: LhbNotPublishedError 语义=未公布, JSON 解析成功才会抛, 不受重试影响）
+    const j = await withRetry(async () => {
+      const r = await fetch(url, { headers: { 'User-Agent': UA, Referer: 'https://data.eastmoney.com/' } });
+      return r.json();
+    });
     // 未公布特征: success=false 且无 result（东财对无数据日期返回 success:false）——仅第 1 页判定
     if (!j.success || !j.result) {
       if (page === 1 && !j.result) throw new LhbNotPublishedError(date);
@@ -178,6 +190,27 @@ async function enrichHotQuotes(hotRaw) {
   return { hit, total: codes.length };
 }
 
+// ── v4.9: 两市额代理源（腾讯指数成交额 f[37]）──
+// 东财 amountMap 缺失当日时, 用上证+深成 f[37]（万元）合计 = 两市总额, 口径一致。
+// 目标: s_amt 尽量不落入中性 50 空转（summary._missing 标「amount代理」供前端展示可信度）。
+async function fetchIdxAmount() {
+  for (let att = 0; att < 3; att++) {
+    try {
+      const r = await fetch('https://qt.gtimg.cn/q=sh000001,sz399001', { headers: { 'User-Agent': UA } });
+      const txt = new TextDecoder('gbk').decode(await r.arrayBuffer());
+      let sum = 0, ok = false;
+      for (const m of txt.matchAll(/v_(?:sh|sz)\d+="([^"]*)"/g)) {
+        const f = m[1].split('~');
+        const v = parseFloat(f[37]);
+        if (f.length > 37 && isFinite(v) && v > 0) { sum += v; ok = true; }
+      }
+      if (ok) return r1(sum / 1e4); // 万元 → 亿
+    } catch (e) { /* 重试 */ }
+    await sleep(600);
+  }
+  return null;
+}
+
 // ── 源5: 东财涨停/炸板/跌停池（须带 sort; date 支持历史但保留约 3 周）──
 async function fetchPools(date) {
   const ymd = date.replace(/-/g, '');
@@ -191,9 +224,11 @@ async function fetchPools(date) {
   let any = false;
   for (const [api, key, sort] of apis) {
     try {
-      const r = await fetch('https://push2ex.eastmoney.com/' + api + '?' + base + '&sort=' + sort + '&date=' + ymd,
-        { headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' } });
-      const j = await r.json();
+      const j = await withRetry(async () => {
+        const r = await fetch('https://push2ex.eastmoney.com/' + api + '?' + base + '&sort=' + sort + '&date=' + ymd,
+          { headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' } });
+        return r.json();
+      }, 2, 600); // v4.9: 池接口 2 次重试
       const pool = j && j.data && Array.isArray(j.data.pool) ? j.data.pool : null;
       if (pool && pool.length) { out[key] = pool.length; any = true; }
       else out[key] = (pool ? 0 : null);
@@ -242,21 +277,28 @@ async function fetchYztMap() {
 async function fetchAmountMap() {
   const map = {};
   const years = [2025, 2026];
-  for (const code of ['zs_1A0001', 'zs_399001']) {
+  const okParts = [];
+  for (const code of ['zs_1A0001', 'zs_399001']) {   // c[6]=单市成交额(元)——两市总额必须沪深两段相加
     for (const year of years) {
       try {
-        const r = await fetch('https://d.10jqka.com.cn/v6/line/' + code + '/01/' + year + '.js',
-          { headers: { 'User-Agent': UA, Referer: 'https://q.10jqka.com.cn/' } });
-        const t = await r.text();
-        const obj = JSON.parse(t.slice(t.indexOf('{'), t.lastIndexOf('}') + 1));
+        const obj = await withRetry(async () => {
+          const r = await fetch('https://d.10jqka.com.cn/v6/line/' + code + '/01/' + year + '.js',
+            { headers: { 'User-Agent': UA, Referer: 'https://q.10jqka.com.cn/' } });
+          const t = await r.text();
+          return JSON.parse(t.slice(t.indexOf('{'), t.lastIndexOf('}') + 1));
+        }, 3, 1000);
         (obj.data || '').split(';').filter(Boolean).forEach(l => {
           const c = l.split(',');
           if (c.length >= 7 && +c[6] > 0) map[c[0]] = (map[c[0]] || 0) + (+c[6]) / 1e8; // 元 → 亿
         });
-      } catch (e) { /* 单年失败容错 */ }
+        okParts.push(code + '/' + year);
+      } catch (e) { console.error('  成交额年K失败: ' + code + '/' + year + ' — ' + e.message); }
       await sleep(300);
     }
   }
+  // v4.9: 缺段拒绝入库——单市口径会腰斩两市总额（2026-09-28 实锤: 深成指年K瞬断被静默吞 → 全 Map 腰斩,
+  // 9/28 额 17028→8045 亿、s_amt 虚高）, 宁可管道失败告警也不入错数
+  if (okParts.length < 4) { console.error('FATAL: 成交额年K缺段（仅 ' + okParts.join(',') + '）——单市口径会腰斩总额, 拒绝入库'); return null; }
   if (!Object.keys(map).length) return null;
   return map;
 }
@@ -283,6 +325,47 @@ async function fetchRzrqMap() {
   return Object.keys(out).length ? out : null;
 }
 
+// ── v4.9 题材降噪: 词典归一 + 个股数聚合 + 专属诱因黑名单 + 跨个股阈值 ──
+// 旧口径 = 把诱因串按「+」拆词频: 单只票的专属诱因（"拟收购界面财联社"）被当题材、
+// 同概念多写法（上海/广州国资）被拆散 → "新晋 106 / 退潮 155" 级噪声。四步修复:
+//   1) 归一家族: 正则命中 → 标准题材（种子词典, 可增量维护; 只归「家族变体」明确的类, 其余保留原词）
+//   2) 个股数聚合: 一只票对一题材只投 1 票（Set 去重）, count = 个股数 而非词频
+//   3) 黑名单: 词典未命中的 token 含公告动作动词（拟收购/签署/减持…）= 专属诱因/一次性事件 → 扔
+//   4) 阈值: 跨 ≥2 只不同个股才算题材（孤点天然过滤; MIN_TOPIC_STOCKS 可调）
+const TOPIC_FAMILIES = [
+  [/央企|中国电子|中国电科|中船|航天科工|兵器|核工业/, '央企改革'],
+  [/国资|国企|国有/, '国企改革'],
+  [/拟收购|收购|并购|资产重组|重组|控股变更|控股股东变更|实控人变更|实际控制人变更|控制权变更|借壳|要约/, '并购重组'],
+];
+const MA_TOUCH = /收购|并购|重组|借壳|要约/; // 并购家族: 长串(≥7字)几乎必带具体公司名/标的（"拟收购界面财联社"）→ 专属诱因
+const TOPIC_NOISE_RE = /拟|签署|签订|终止|解除|收到|完成|中标|竞得|摘牌|摘得|获批|获得|通过|回复|问询|立案|处罚|警示|监管|增持|减持|回购|质押|解禁|分红|派息|转增|重整|破产|清算|预盈|预亏|预增|预减|更名|改名|退市|戴帽|摘帽|ST|举牌|定增|配股|增发|发行|变更|设立|募资/;
+const MIN_TOPIC_STOCKS = 2;
+
+function normalizeTopicTag(t) {
+  for (const [re, std] of TOPIC_FAMILIES) {
+    if (re.test(t)) {
+      if (std === '并购重组' && MA_TOUCH.test(t) && t.length >= 7) return null; // 带专名的专属串
+      return std;
+    }
+  }
+  if (TOPIC_NOISE_RE.test(t)) return null;
+  return t; // 词典未命中且无事件动词 → 保留原词（真题材标签）
+}
+function buildTopics(hot) {
+  const vote = new Map(); // 标准题材 → Set(个股 code)
+  hot.forEach(h => {
+    const tokens = [...new Set((h.reason || '').split(/[+＋]/).map(w => w.trim()).filter(Boolean))];
+    const stds = new Set(tokens.map(normalizeTopicTag).filter(Boolean)); // 同票同题材只投 1 票
+    stds.forEach(t => { if (!vote.has(t)) vote.set(t, new Set()); vote.get(t).add(h.code); });
+  });
+  const list = [...vote.entries()]
+    .filter(([, codes]) => codes.size >= MIN_TOPIC_STOCKS)
+    .sort((a, b) => b[1].size - a[1].size)
+    .slice(0, 15)
+    .map(([tag, codes]) => ({ tag, count: codes.size, codes: [...codes] }));
+  return { list, kinds: vote.size };
+}
+
 // ── day 组装（v4.5: +连板梯队分布/炸板金额/两融）──
 function buildDay(date, lhbRaw, hotRaw, industry, indexes, pools, amountYi, amountMap, yztMap, prevZtCodes, prevZtLb, rzrqMap) {
   const lhb = lhbRaw.map(x => ({
@@ -307,9 +390,9 @@ function buildDay(date, lhbRaw, hotRaw, industry, indexes, pools, amountYi, amou
   const lhb_aggr = [...byCode.values()];
 
   const hot = hotRaw.map(x => ({ code: x.code, name: x.name, reason: x.reason || '', close: x.close, change_pct: r2(x.zhangfu || 0), huanshou: r2(x.huanshou || 0) }));
-  const freq = {};
-  hot.forEach(h => (h.reason || '').split(/[+＋]/).forEach(w => { w = w.trim(); if (w) freq[w] = (freq[w] || 0) + 1; }));
-  const topics = Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 15).map(([tag, count]) => ({ tag, count }));
+  // v4.9: 归一+个股数聚合（含 codes 供前端直用）; 旧词频口径见 git 历史
+  const tp = buildTopics(hot);
+  const topics = tp.list;
 
   const net_total_yi = r2(lhb.reduce((a, l) => a + l.net_buy_wan, 0) / 1e4);
   const net_pos = lhb.filter(l => l.net_buy_wan > 0).length;
@@ -375,7 +458,7 @@ function buildDay(date, lhbRaw, hotRaw, industry, indexes, pools, amountYi, amou
 
   const summary = {
     lhb_count: lhb.length, lhb_stocks: lhb_aggr.length, net_total_yi, net_pos, net_neg,
-    hot_count: hot.length, topic_kinds: Object.keys(freq).length,
+    hot_count: hot.length, topic_kinds: tp.kinds,
     ind_count: industry.length, ind_up, ind_down, top_industry: null, bottom_industry: null,
     zt_count: zt, dt_count: dt, zb_count: zb, zbl_pct,
     max_lb: pools ? pools.max_lb : null, lb2_count: pools ? pools.lb2 : null,
@@ -449,6 +532,7 @@ async function backfill() {
       day.industry || [], day.indexes || null, pools, amountYi, amountMap, yztMap, prevCodes, prevLb, rzrqMap);
     day.summary = rebuilt.summary;
     day.emotion = rebuilt.emotion;
+    day.topics = rebuilt.topics; // v4.9: 题材归一口径全档重算（新旧算法不混图）
     if (day.summary.zt_codes) hasCodes++;
     if (day.summary.hs_dt_count != null) hasHs++;
     prevCodes = day.summary.zt_codes; // 相邻天传递 → 断板家数
@@ -466,8 +550,8 @@ async function backfill() {
   recalcRanks(D.all_days);
   D.meta = D.meta || {};
   D.meta.dataQuality = Object.assign({}, D.meta.dataQuality, {
-    formulaVersion: 'v4.5 七因子（s_net20/s_pos10/s_brd20/s_hot10/s_zdt15/s_zbl10/s_amt15）+ yzt/dt_band/hs/lb_dist/zb_amt/rzrq',
-    formulaNote: 's_zdt=(涨停+2)/(涨停+跌停+4)*100; s_zbl=100-炸板率*2; s_amt=两市额/前20日均额*50; 东财池保留约3周, 更早日 s_zdt/s_zbl 中性50补位（summary._missing 标记）; yzt_chg=同花顺883994昨日涨停指数当日涨跌幅（打板赚钱效应）; dt_band=断板家数（相邻两日池齐全才可算）; hs_lb3_count=昨日连板≥3高位股家数, hs_dt_count/hs_dt_fund/hs_dt_amt=高位股今日跌停数/封单合计(亿)/成交额合计(亿); lb_dist=连板梯队分布{板级:家数}(≥2板); zb_amt=炸板股成交额合计(亿); rzrq=两融{jme:融资净买入(亿),ye:融资余额(亿)}（T+1 披露, 最新一日可能缺, 重跑 backfill 即补）',
+    formulaVersion: 'v4.9 七因子（s_net20/s_pos10/s_brd20/s_hot10/s_zdt15/s_zbl10/s_amt15）+ yzt/dt_band/hs/lb_dist/zb_amt/rzrq + 题材归一(词典+个股数+黑名单+阈值≥2) · topics 全档重算',
+    formulaNote: 's_zdt=(涨停+2)/(涨停+跌停+4)*100; s_zbl=100-炸板率*2; s_amt=两市额/前20日均额*50; 东财池保留约3周, 更早日 s_zdt/s_zbl 中性50补位（summary._missing 标记）; yzt_chg=同花顺883994昨日涨停指数当日涨跌幅（打板赚钱效应）; dt_band=断板家数（相邻两日池齐全才可算）; hs_lb3_count=昨日连板≥3高位股家数, hs_dt_count/hs_dt_fund/hs_dt_amt=高位股今日跌停数/封单合计(亿)/成交额合计(亿); lb_dist=连板梯队分布{板级:家数}(≥2板); zb_amt=炸板股成交额合计(亿); rzrq=两融{jme:融资净买入(亿),ye:融资余额(亿)}（T+1 披露, 最新一日可能缺, 重跑 backfill 即补）; topics=题材词典归一+个股数聚合（一票一题材一票）+专属诱因黑名单+跨≥2只个股阈值, codes=该题材成员股代码表（前端下钻直用）',
     formulaChangeDate: '2026-09-27',
     backfilledAt: new Date().toISOString()
   });
@@ -548,7 +632,13 @@ async function backfill() {
   const yztMap = await fetchYztMap();
   console.log('抓取两融历史（T+1 披露）…');
   const rzrqMap = await fetchRzrqMap();
-  const amountYi = amountMap ? (amountMap[apiDate.replace(/-/g, '')] || null) : null;
+  let amountYi = amountMap ? (amountMap[apiDate.replace(/-/g, '')] || null) : null;
+  // v4.9: 两市额主源缺失 → 腾讯指数成交额代理（防 s_amt 中性 50 空转; 入档标「amount代理」）
+  let amountProxy = false;
+  if (amountYi == null) {
+    const proxy = await fetchIdxAmount();
+    if (proxy != null) { amountYi = proxy; amountProxy = true; console.log('  两市额主源缺失 → 指数成交额代理 ' + proxy + ' 亿'); }
+  }
   // v4.8.10: redo 替换模式下「前一交易日」须取目标日之前的存档——最后一项就是目标日自己，
   // 自我对比会把 dt_band（断板数）错算成 0
   const tgtIdx = dates.indexOf(apiDate);
@@ -560,6 +650,8 @@ async function backfill() {
     '· 昨涨停效应:', yztMap && yztMap[apiDate.replace(/-/g, '')] != null ? yztMap[apiDate.replace(/-/g, '')] + '%' : '缺');
 
   const day = buildDay(apiDate, lhbRaw, hotRaw, industry, indexes, pools, amountYi, amountMap, yztMap, prevZtCodes, prevZtLb, rzrqMap);
+  // v4.9: 代理成功时 amountYi 非 null, _missing 里不会有 'amount'; 显式补标供前端展示「X/7 因子补位」
+  if (amountProxy && day.summary) (day.summary._missing = day.summary._missing || []).push('amount代理');
   if (!day.lhb.length || !day.hot.length) { console.error('当日数据异常（空榜）——可能非交易日，中止'); process.exit(1); }
 
   // ── 追加/替换（redo）+ 全档重算 ──
@@ -585,7 +677,7 @@ async function backfill() {
   D.meta.dataQuality = Object.assign({}, D.meta.dataQuality, {
     dailyPipe: 'fetch-daily.js 自动管道 v4.5（东财龙虎榜+getharden+881xxx日K+腾讯指数+涨跌停炸板池(含封单/梯队/炸板额)+两市额+883994昨涨停+高位亏钱效应+两融）',
     dailyPipeNote: 'pct_rank/net_pct_rank 为存档期内分位 rank/(n-1)，每次追加全档重算',
-    formulaVersion: 'v4.5 七因子（s_net20/s_pos10/s_brd20/s_hot10/s_zdt15/s_zbl10/s_amt15）+ yzt/dt_band/hs/lb_dist/zb_amt/rzrq',
+    formulaVersion: 'v4.9 七因子（s_net20/s_pos10/s_brd20/s_hot10/s_zdt15/s_zbl10/s_amt15）+ yzt/dt_band/hs/lb_dist/zb_amt/rzrq + 题材归一(词典+个股数+黑名单+阈值≥2)',
     dailyPipeLastRun: new Date().toISOString()
   });
 

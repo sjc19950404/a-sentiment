@@ -107,3 +107,29 @@ jobs:
       - name: 发布到 GitHub Pages
         if: steps.mode.outputs.skip_fetch == 'true' || steps.gate.outputs.updated == 'true' || inputs.kline_backfill == true
         uses: actions/deploy-pages@v4
+
+      # ── v4.9 运维加固: 数据快照独立副本（Release 附件滚动累积; 仓库被误删/历史损坏时按日期恢复）──
+      - name: 数据快照归档（Release 附件）
+        if: steps.mode.outputs.skip_fetch != 'true' && steps.gate.outputs.updated == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp data.json "data-$(date +'%F').json"
+          gh release view data-archive >/dev/null 2>&1 || gh release create data-archive --title "数据快照归档" --notes "每日管道自动上传 data.json 快照（文件名=日期），供灾备恢复"
+          gh release upload data-archive "data-$(date +'%F').json" --clobber
+
+      # ── v4.9 运维加固: 任意步骤失败 → 自动开/更新告警 Issue（不再静默失败等人发现）──
+      - name: 失败自动告警
+        if: failure()
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runUrl = '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}';
+            const body = '管道运行失败: ' + runUrl + '\n- 事件: ${{ github.event_name }}\n- 时间: ' + new Date().toISOString() + '\n\n请查日志定位（抓取源故障 / 数据异常 / 部署失败），修复后关闭本 Issue。';
+            const found = await github.rest.issues.listForRepo({ owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: 'pipeline-alert', per_page: 1 });
+            if (found.data.length) {
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: found.data[0].number, body });
+            } else {
+              await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title: '⚠️ 情绪系统管道失败告警（自动）', body, labels: ['pipeline-alert'] });
+            }

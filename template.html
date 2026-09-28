@@ -449,10 +449,23 @@ function cls(v){return v>0?'up':(v<0?'down':'');}
 function escHtml(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function pct(v,d=2){return (v>0?'+':'')+v.toFixed(d)+'%';}
 function topTopics(day,n){return (day.topics||[]).slice(0,n);}
-/* ── 题材成分股（v4.8.6）: 从当日强势股 reason 按 + 拆分归因出该题材的成员股 ──
-   归因文本形如 "海峡两岸+福建自贸区"，一只股可同时属于多个题材 */
+/* ── 题材成分股（v4.8.6 / v4.9 归一口径）──
+   v4.9: 管道端题材词典归一+个股数聚合, topics[].codes=成员代码表（标准题材 tag 不再等于原始诱因 token）,
+         下钻直接按 codes 取成员; 旧存档无 codes → 回退「reason 按 + 拆分」匹配原始 token */
 function topicMembers(day,tag){
   if(!day||!tag)return [];
+  const t=(day.topics||[]).find(x=>x.tag===tag);
+  if(t&&Array.isArray(t.codes)&&t.codes.length){
+    const want=new Set(t.codes);
+    const out=[];
+    (day.hot||[]).forEach(s=>{
+      if(!want.has(s.code))return;
+      const tags=(s.reason||'').split(/[+＋]/).map(x=>x.trim()).filter(Boolean);
+      out.push({code:s.code,name:s.name,change_pct:s.change_pct,huanshou:s.huanshou,close:s.close,
+                tags,primary:tags.includes(tag)});
+    });
+    return out.sort((a,b)=>b.change_pct-a.change_pct);
+  }
   const out=[];
   (day.hot||[]).forEach(s=>{
     const tags=(s.reason||'').split('+').map(t=>t.trim()).filter(Boolean);
@@ -462,22 +475,39 @@ function topicMembers(day,tag){
   });
   return out.sort((a,b)=>b.change_pct-a.change_pct);
 }
-/* ── 题材强度打分（v4.3）: 宽度30 + 高度(均涨幅)30 + 榜上资金20 + 持续性20 ── */
+/* ── 题材强度打分（v4.3 / v4.9 归一口径）: 宽度30 + 高度(均涨幅)30 + 榜上资金20 + 持续性20 ── */
 function topicStrength(day){
   const lhbMap = new Map(); (day.lhb_aggr||day.lhb||[]).forEach(l=>lhbMap.set(l.code, l.net_buy_wan||0));
   const tagMap = new Map();
-  (day.hot||[]).forEach(h=>{
-    (h.reason||'').split(/[+＋]/).map(t=>t.trim()).filter(Boolean).forEach(tag=>{
-      let o = tagMap.get(tag); if(!o){ o = {tag, count:0, zf:0, hs:0, net:0}; tagMap.set(tag, o); }
-      o.count++; o.zf += h.change_pct||0; o.hs += h.huanshou||0;
-      if(lhbMap.has(h.code)) o.net += lhbMap.get(h.code);
+  // v4.9: 优先按归一 topics[].codes 聚合（个股数口径, 一票一票）; 无 codes 的旧档回退 reason 拆分
+  const topics=(day.topics||[]).filter(t=>Array.isArray(t.codes)&&t.codes.length);
+  if(topics.length){
+    const hotBy=new Map((day.hot||[]).map(h=>[h.code,h]));
+    topics.forEach(t=>{
+      const o={tag:t.tag,count:0,zf:0,hs:0,net:0};
+      t.codes.forEach(c=>{
+        const h=hotBy.get(c); if(!h)return;
+        o.count++; o.zf+=h.change_pct||0; o.hs+=h.huanshou||0;
+        if(lhbMap.has(c)) o.net+=lhbMap.get(c);
+      });
+      if(o.count)tagMap.set(t.tag,o);
     });
-  });
+  } else {
+    (day.hot||[]).forEach(h=>{
+      (h.reason||'').split(/[+＋]/).map(t=>t.trim()).filter(Boolean).forEach(tag=>{
+        let o = tagMap.get(tag); if(!o){ o = {tag, count:0, zf:0, hs:0, net:0}; tagMap.set(tag, o); }
+        o.count++; o.zf += h.change_pct||0; o.hs += h.huanshou||0;
+        if(lhbMap.has(h.code)) o.net += lhbMap.get(h.code);
+      });
+    });
+  }
   const out = [...tagMap.values()].map(o=>{
     o.avg_zf = +(o.zf/o.count).toFixed(2); o.avg_hs = +(o.hs/o.count).toFixed(2); o.net = Math.round(o.net);
-    let streak = 0; // 连续出现天数（含当日）
+    let streak = 0; // 连续出现天数（含当日; v4.9 按归一 topics 匹配, 旧档回退原始 token）
     for(let i = DAYS.length-1; i >= 0; i--){
-      const found = (DAYS[i].hot||[]).some(h => (h.reason||'').split(/[+＋]/).map(t=>t.trim()).includes(o.tag));
+      const d=DAYS[i], tps=d.topics||[];
+      const found = tps.length ? tps.some(t=>t.tag===o.tag)
+        : (d.hot||[]).some(h => (h.reason||'').split(/[+＋]/).map(t=>t.trim()).includes(o.tag));
       if(found) streak++; else break;
     }
     o.streak = streak; return o;
@@ -659,7 +689,7 @@ window.__v43dbg = { divergence, topicStrength }; // 测试钩子（只读）
   const prev=DAYS[DAYS.length-2]?.emotion||{};
   const arrow=(a,b)=>a==null||b==null?'':(a>b?' ▲':(a<b?' ▼':' ▶'));
   $id('emo-kpis').innerHTML=`
-  <div class="kpi"><div class="lab">综合情绪（当前）</div><div class="val num" style="font-size:26px;color:${e.value>=60?UP:e.value<=40?DOWN:'#d7dee9'}">${e.value}${arrow(e.value,prev.value)}</div><div class="sub">历史分位 ${e.pct_rank}%</div></div>
+  <div class="kpi"><div class="lab">综合情绪（当前）</div><div class="val num" style="font-size:26px;color:${e.value>=60?UP:e.value<=40?DOWN:'#d7dee9'}">${e.value}${arrow(e.value,prev.value)}</div><div class="sub">历史分位 ${e.pct_rank}%${(()=>{const m=((CUR.summary||{})._missing)||[];let n=0;m.forEach(x=>{if(x==='pools')n+=2;else n+=1;});return n?` · <span style="color:#e0a34f;cursor:help" title="补位因子: ${(m.join('、')||'—')}\n数据源缺失时该因子以中性值 50 参与加权, 今日可信度打折扣">⚠ ${n}/7 因子补位</span>`:'';})()}</div></div>
   <div class="kpi k-gold"><div class="lab">龙虎榜净买分</div><div class="val num gold">${e.s_net}${arrow(e.s_net,prev.s_net)}</div><div class="sub">净买 ¥${e.net_total_yi}亿 · 分位 ${e.net_pct_rank}%</div></div>
   <div class="kpi"><div class="lab">净买家数比</div><div class="val num">${e.s_pos}%${arrow(e.s_pos,prev.s_pos)}</div><div class="sub">榜上正收益占比</div></div>
   <div class="kpi"><div class="lab">行业广度</div><div class="val num">${e.s_brd}%${arrow(e.s_brd,prev.s_brd)}</div><div class="sub">上涨板块占比</div></div>

@@ -87,6 +87,15 @@
       return { count: d.data.tc != null ? d.data.tc : pool.length, date: qd.length === 8 ? qd.slice(4, 6) + '-' + qd.slice(6) : '', top: pool.slice(0, 3).map(p => p.n) };
     } catch (e) { return null; }
   }
+  // v4.9: 跌停池（盘中情绪分涨跌停结构维用; 失败静默——该维自动降权重）
+  async function fetchDTPool() {
+    const dt = CUR.trade_date.replace(/-/g, '');
+    try {
+      const d = await jsonp('https://push2ex.eastmoney.com/getTopicDTPool?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wz.ztzt&Pageindex=0&pagesize=5&sort=fund%3Aasc&date=' + dt, 'cb');
+      if (!d || !d.data || !d.data.pool) return null;
+      return { count: d.data.tc != null ? d.data.tc : d.data.pool.length };
+    } catch (e) { return null; }
+  }
 
   // ── 交易时段（本地规则兜底；marketStat 优先）──
   function localSession() {
@@ -104,7 +113,7 @@
   }
 
   // 分通道渲染: 各数据源独立补充，互不阻塞（谁先到谁先显示）
-  const state = { idx: null, stat: null, breadth: null, zt: null };
+  const state = { idx: null, stat: null, breadth: null, zt: null, dt: null };
   const setMsg = t => { const s = bar.querySelector('#rt-status'); if (s) s.innerHTML = t; };
 
   function renderAll() {
@@ -116,6 +125,9 @@
     if (breadth) segs.push(`<span>涨/跌 <span class="up num">${breadth.up}</span>/<span class="down num">${breadth.down}</span></span>`);
     if (zt) segs.push(`<span>涨停 <b class="up num">${zt.count}</b><span class="dim" style="font-size:10.5px">（${esc(zt.date)}）</span></span>` +
       (zt.top && zt.top.length ? `<span class="dim" style="font-size:11px">前排: ${zt.top.map(esc).join('·')}</span>` : ''));
+    // v4.9 盘中情绪（实时估值）: 指数40 + 广度35 + 涨跌停25——与收盘七因子口径不同, 显式标注「估值」
+    const sc = isOpen() ? intradayScore() : null;
+    if (sc != null) segs.push(`<span>盘中情绪 <b class="num ${sc >= 60 ? 'up' : sc <= 40 ? 'down' : ''}" style="font-size:15px" title="盘中实时估值 = 指数涨跌(40%) + 涨跌家数(35%) + 涨跌停结构(25%)。与收盘七因子口径不同, 仅供盘中参考, 不可与收盘情绪分直接对比。"> ${sc}</b><span class="dim" style="font-size:10px"> 估值</span></span>`);
     const dataEl = bar.querySelector('#rt-data');
     if (dataEl) dataEl.innerHTML = segs.join('');
     const open = isOpen();
@@ -126,6 +138,24 @@
     return t.length >= 14 ? t.replace(/^(\d{8})(\d{2})(\d{2})(\d{2}).*/, (m, d, h, mi, se) => d.slice(4, 6) + '-' + d.slice(6) + ' ' + h + ':' + mi + ':' + se) : new Date().toTimeString().slice(0, 8);
   }
 
+  // ── v4.9 盘中情绪分（实时估值）: 指数40 + 广度35 + 涨跌停25（缺维自动降权重, 不硬凑）──
+  function intradayScore() {
+    const cl = v => Math.max(0, Math.min(100, v));
+    const idxs = state.idx ? [state.idx['000001'], state.idx['399001'], state.idx['399006']].filter(Boolean) : [];
+    if (!idxs.length) return null;
+    const avg = idxs.reduce((a, o) => a + o.pct, 0) / idxs.length;
+    const parts = [[cl(50 + avg * 16.7), 40]]; // 三指数均涨跌 ±3% → 0/100
+    if (state.breadth && (state.breadth.up + state.breadth.down) > 0) {
+      parts.push([state.breadth.up / (state.breadth.up + state.breadth.down) * 100, 35]);
+    }
+    if (state.zt && state.dt) { // 涨跌停结构与收盘 s_zdt 同公式
+      const zt = state.zt.count || 0, dtc = state.dt.count || 0;
+      parts.push([cl((zt + 2) / (zt + dtc + 4) * 100), 25]);
+    }
+    const w = parts.reduce((a, p) => a + p[1], 0);
+    return Math.round(parts.reduce((a, p) => a + p[0] * p[1], 0) / w);
+  }
+
   function refresh() {
     // 分通道 fire-and-forget: 各源独立渲染先到先显示；并发无害（渲染幂等）
     fetchIdx().then(d => { state.idx = d; renderAll(); }).catch(() => {
@@ -134,13 +164,26 @@
     fetchStat().then(d => { state.stat = d; if (d) statOpen = d.status === 'open'; renderAll(); }).catch(() => {});
     fetchBreadth().then(d => { state.breadth = d; renderAll(); }).catch(() => {});
     fetchZTPool().then(d => { state.zt = d; renderAll(); }).catch(() => {});
+    fetchDTPool().then(d => { state.dt = d; renderAll(); }).catch(() => {});
   }
 
-  function startStop() {
-    if (isOpen()) {
-      if (!timer) { timer = setInterval(() => { if (!document.hidden) refresh(); }, 30000); }
-    } else if (timer) { clearInterval(timer); timer = null; }
+  // ── v4.9 分时段轮询: 开盘/收盘前后 8s · 盘中 30s · 午休/盘外停（交易所状态说开市则 30s 兜底）──
+  // 原固定 30s setInterval → 递归 setTimeout 链, 每次重算时段间隔
+  function pollMs() {
+    if (statOpen === false) return 0;
+    const n = new Date(), hm = n.getHours() * 100 + n.getMinutes(), day = n.getDay();
+    if (day === 0 || day === 6) return 0;
+    if ((hm >= 915 && hm <= 935) || (hm >= 1445 && hm <= 1505)) return 8000;  // 竞价+开盘 20 分钟 / 尾盘竞价前后
+    if ((hm > 935 && hm <= 1135) || (hm > 1255 && hm < 1445)) return 30000;  // 盘中常规
+    return statOpen === true ? 30000 : 0;                                     // 午休/盘外停
   }
+  function schedule() {
+    if (timer) { clearTimeout(timer); timer = null; }
+    const ms = pollMs();
+    if (!ms) return;
+    timer = setTimeout(() => { if (!document.hidden) refresh(); schedule(); }, ms);
+  }
+  function startStop() { schedule(); }
 
   $id('rt-refresh').onclick = () => { refresh(); LAB.toast('正在拉取实时快照…'); };
   document.addEventListener('visibilitychange', () => { if (!document.hidden) { refresh(); startStop(); } });
