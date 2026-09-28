@@ -88,6 +88,27 @@ svg .pickable{cursor:pointer}
 #modal table{font-size:12px}
 #modal thead th{background:#1a2233;padding:6px 9px}
 #modal tbody td{padding:5px 9px}
+/* ── 题材成分股弹窗（v4.8.6）── */
+#tmodal-mask{position:fixed;inset:0;background:rgba(4,6,10,.72);backdrop-filter:blur(3px);z-index:110;display:none;align-items:flex-start;justify-content:center;overflow:auto;padding:40px 16px}
+#tmodal-mask.on{display:flex}
+#tmodal{background:#121826;border:1px solid #2a3550;border-radius:14px;max-width:660px;width:100%;padding:20px 22px;box-shadow:0 18px 60px rgba(0,0,0,.5)}
+#tmodal .m-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:10px;margin-bottom:10px}
+#tmodal .m-head b{font-size:19px;color:var(--gold)}
+#tmodal .m-close{margin-left:auto;cursor:pointer;color:var(--dim);font-size:20px;line-height:1;padding:2px 8px;border-radius:6px}
+#tmodal .m-close:hover{background:#1c2434;color:#fff}
+#tmodal .tm-list{max-height:52vh;overflow:auto;border:1px solid var(--line);border-radius:8px}
+#tmodal .tm-row{display:flex;align-items:center;gap:10px;padding:7px 11px;border-bottom:1px solid #1b2333;cursor:pointer;transition:.12s}
+#tmodal .tm-row:last-child{border-bottom:0}
+#tmodal .tm-row:hover{background:rgba(91,140,255,.10)}
+#tmodal .tm-row .rk{color:var(--faint);font-size:11px;min-width:20px;text-align:right}
+#tmodal .tm-row .nm{font-weight:700;font-size:13px;min-width:88px}
+#tmodal .tm-row .cd{color:var(--faint);font-size:11.5px;min-width:58px}
+#tmodal .tm-row .zf{min-width:66px;text-align:right;font-weight:700}
+#tmodal .tm-row .hs{min-width:56px;text-align:right;color:var(--dim);font-size:11.5px}
+#tmodal .tm-row .tg{margin-left:auto;text-align:right;white-space:normal;max-width:210px}
+#tmodal .tm-row .tag{font-size:10.5px;padding:1px 6px}
+#tmodal .tm-row .tag.self{background:rgba(232,176,75,.16);color:var(--gold);border-color:rgba(232,176,75,.45)}
+#tmodal .tm-empty{padding:22px;text-align:center;color:var(--faint);font-size:12.5px}
 /* ── v4.8 全市场K线弹窗 ── */
 #kmodal-mask{position:fixed;inset:0;background:rgba(4,6,10,.72);backdrop-filter:blur(3px);z-index:120;display:none;align-items:flex-start;justify-content:center;overflow:auto;padding:40px 16px}
 #kmodal-mask.on{display:flex}
@@ -197,8 +218,8 @@ textarea:focus{outline:none;border-color:#33415c}
 <!-- ═══ Tab1 当日盘面 ═══ -->
 <div class="pane on" id="p1">
   <div class="kpis" id="cur-kpis" data-modtip="<b>今天市场的核心数字</b>：多少家涨停跌停、连板股多不多、打板的人赚不赚钱、成交热不热闹。下面的模块都是围绕这些数字展开的。"></div>
-  <section data-modtip="<b>今天大家都在炒什么</b>：把今天最活跃的股票按题材分类，数哪个题材最热门，取前 15 名。点条目可以看个股详情。"><h2>题材热度榜 <span class="note">同花顺强势股归因 · 按 + 拆分词频 TOP15</span></h2><div id="svg-topics"></div></section>
-  <section data-modtip="<b>哪个题材不光热闹、质量还高</b>：综合覆盖面、涨幅、资金投入和持续时间打分，取前 12 名。和左边热度榜搭配看：热度=关注度，强度=含金量。"><h2>题材强度榜 <span class="note">宽度30 + 高度30 + 榜上资金20 + 持续性20 · 综合打分 TOP12</span></h2><div class="tbl-box"><table id="tbl-tstrength"></table></div></section>
+  <section data-modtip="<b>今天大家都在炒什么</b>：把今天最活跃的股票按题材分类，数哪个题材最热门，取前 15 名。<br>点任意题材 → 看这个题材里有哪几只股票 → 再点股票看它的详细资料。"><h2>题材热度榜 <span class="note">同花顺强势股归因 · 按 + 拆分词频 TOP15</span></h2><div id="svg-topics"></div></section>
+  <section data-modtip="<b>哪个题材不光热闹、质量还高</b>：综合覆盖面、涨幅、资金投入和持续时间打分，取前 12 名。和左边热度榜搭配看：热度=关注度，强度=含金量。<br>点题材名同样能展开看成分股。"><h2>题材强度榜 <span class="note">宽度30 + 高度30 + 榜上资金20 + 持续性20 · 综合打分 TOP12</span></h2><div class="tbl-box"><table id="tbl-tstrength"></table></div></section>
   <section data-modtip="<b>今天哪些行业涨、哪些跌</b>：90 个行业板块按当天涨跌幅排序，数据来自行业指数的真实行情。"><h2>行业板块涨跌榜 <span class="note" id="ind-note"></span></h2><div class="sec-desc" id="ind-desc"></div><div id="svg-industry"></div></section>
   <section data-modtip="<b>大资金今天买了谁</b>：交易所公布的龙虎榜里，哪些股被净买入最多，取前 15 名。红=买入多于卖出，绿=卖出多于买入。点条目看个股详情。"><h2>龙虎榜净买入排名 <span class="note">按净买入额降序 · TOP15</span></h2><div class="sec-desc" id="lhb-desc"></div><div id="svg-lhb"></div></section>
   <div class="grid2">
@@ -227,7 +248,7 @@ textarea:focus{outline:none;border-color:#33415c}
   </section>
   <div class="kpis" id="hist-kpis" data-modtip="<b>那一天的市场数字</b>：选好日期后，这里显示当天的情绪和资金情况，和当时看到的完全一样。"></div>
   <div class="grid2">
-    <section style="margin-bottom:0" data-modtip="<b>那天的热门题材前 10 名</b>，和「当日盘面」里的题材热度榜是同一套算法。"><h2>题材热度 TOP10 <span class="note" id="h-topic-note"></span></h2><div id="svg-h-topics"></div></section>
+    <section style="margin-bottom:0" data-modtip="<b>那天的热门题材前 10 名</b>，和「当日盘面」里的题材热度榜是同一套算法。<br>点题材可以看那天这个题材里有哪些股票。"><h2>题材热度 TOP10 <span class="note" id="h-topic-note"></span></h2><div id="svg-h-topics"></div></section>
     <section style="margin-bottom:0" data-modtip="<b>那天被资金买入最多的 10 只股票</b>，和当日盘面的排名图同源。"><h2>龙虎榜净买 TOP10 <span class="note">当日</span></h2><div id="svg-h-lhb"></div></section>
   </div>
   <section style="margin-top:12px" data-modtip="<b>那天各行业的涨跌情况</b>，和当日盘面的行业榜是同一套数据，用来回看那天什么行业在动。"><h2>当日行业涨跌榜 <span class="note" id="h-ind-note"></span></h2><div id="svg-h-ind"></div></section>
@@ -381,6 +402,11 @@ textarea:focus{outline:none;border-color:#33415c}
   <div class="m-head"><b id="m-name"></b><span class="code num" id="m-code"></span><span id="m-px" class="num" style="font-size:15px;font-weight:700"></span><span id="m-chg" class="num" style="font-weight:700"></span><span class="m-close" id="m-close">✕</span></div>
   <div id="m-body"></div>
 </div></div>
+<div id="tmodal-mask"><div id="tmodal">
+  <div class="m-head"><b id="tm-tag"></b><span class="dim" id="tm-meta" style="font-size:12px"></span><span class="m-close" id="tm-close">✕</span></div>
+  <div class="sec-desc" style="margin-bottom:8px">点任意一行 → 打开该股详情（龙虎榜/归因历史/K线）</div>
+  <div id="tm-body"></div>
+</div></div>
 
 /*__DATA__*/
 <script>
@@ -419,8 +445,23 @@ const UP='#ff5a5a',DOWN='#2fbf8f',DIM='#8a94a6',FAINT='#5a6478',LINE='#212a3a',G
 function el(t,a,x){const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);if(x!=null)e.textContent=x;return e;}
 function fmtW(w){const a=Math.abs(w);if(a>=10000)return (w/10000).toFixed(2)+'亿';if(a>=1)return Math.round(w).toLocaleString()+'万';return w.toFixed(1)+'万';}
 function cls(v){return v>0?'up':(v<0?'down':'');}
+/* 全局 HTML 转义（v4.8.6）：供 _openTopic 等全局函数使用；局部 IIFE 内的同名副本仍各自遮蔽 */
+function escHtml(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function pct(v,d=2){return (v>0?'+':'')+v.toFixed(d)+'%';}
 function topTopics(day,n){return (day.topics||[]).slice(0,n);}
+/* ── 题材成分股（v4.8.6）: 从当日强势股 reason 按 + 拆分归因出该题材的成员股 ──
+   归因文本形如 "海峡两岸+福建自贸区"，一只股可同时属于多个题材 */
+function topicMembers(day,tag){
+  if(!day||!tag)return [];
+  const out=[];
+  (day.hot||[]).forEach(s=>{
+    const tags=(s.reason||'').split('+').map(t=>t.trim()).filter(Boolean);
+    if(tags.includes(tag))
+      out.push({code:s.code,name:s.name,change_pct:s.change_pct,huanshou:s.huanshou,close:s.close,
+                tags,primary:tags[0]===tag});
+  });
+  return out.sort((a,b)=>b.change_pct-a.change_pct);
+}
 /* ── 题材强度打分（v4.3）: 宽度30 + 高度(均涨幅)30 + 榜上资金20 + 持续性20 ── */
 function topicStrength(day){
   const lhbMap = new Map(); (day.lhb_aggr||day.lhb||[]).forEach(l=>lhbMap.set(l.code, l.net_buy_wan||0));
@@ -573,10 +614,10 @@ window.__v43dbg = { divergence, topicStrength }; // 测试钩子（只读）
   $id('st-sub').innerHTML='数据源: <b>东财龙虎榜</b> · <b>同花顺题材归因</b> · <b>同花顺行业日K</b> · <b>腾讯指数</b> · <b>东财涨停/炸板/跌停池</b> · <b>两市成交额</b> · <b>高位股亏钱效应</b> ｜ 生成 '+D.generated+' ｜ 每个交易日 18:30 自动管道抓取入库';
   $id('cur-kpis').innerHTML=kpiHTML(CUR);
   const tt=topTopics(CUR,15);
-  $id('svg-topics').appendChild(barh(tt,{val:t=>t.count,label:t=>t.tag,vfmt:v=>v+' 只',color:()=>UP,hi:i=>i<3,padL:150,padR:70,padB:18}));
+  $id('svg-topics').appendChild(barh(tt,{val:t=>t.count,label:t=>t.tag,vfmt:v=>v+' 只',color:()=>UP,hi:i=>i<3,padL:150,padR:70,padB:18,onpick:t=>_openTopic(t.tag)}));
   // 题材强度表
   $id('tbl-tstrength').innerHTML='<thead><tr><th class="l">强度</th><th class="l">题材</th><th>只数</th><th>均涨幅</th><th>均换手</th><th>榜上净买</th><th>连续</th><th>内部涨跌比</th></tr></thead><tbody>'+
-    topicStrength(CUR).map((o,i)=>`<tr><td class="l"><span class="num" style="font-weight:700;color:${i<3?GOLD:'#d7dee9'}">${o.score}</span><span class="dim" style="font-size:10.5px"> 分</span></td><td class="l"><span class="tag${i<3?' hot':''}">${o.tag}</span></td><td class="num">${o.count}</td><td class="num ${cls(o.avg_zf)}">${pct(o.avg_zf)}</td><td class="num">${o.avg_hs.toFixed(2)}%</td><td class="num ${cls(o.net)}">${o.net?fmtW(o.net):'—'}</td><td class="num dim">${o.streak} 天${o.streak>=3?' ⚡':''}</td><td class="num v44bd" data-topic="${o.tag}" title="板块成分股内上涨占比（实时抓取, 甄别单兵龙头假主线）">—</td></tr>`).join('')+'</tbody>';
+    topicStrength(CUR).map((o,i)=>`<tr><td class="l"><span class="num" style="font-weight:700;color:${i<3?GOLD:'#d7dee9'}">${o.score}</span><span class="dim" style="font-size:10.5px"> 分</span></td><td class="l"><span class="tag${i<3?' hot':''}" style="cursor:pointer" onclick="_openTopic('${o.tag}')" title="点我看该题材成分股">${o.tag}</span></td><td class="num">${o.count}</td><td class="num ${cls(o.avg_zf)}">${pct(o.avg_zf)}</td><td class="num">${o.avg_hs.toFixed(2)}%</td><td class="num ${cls(o.net)}">${o.net?fmtW(o.net):'—'}</td><td class="num dim">${o.streak} 天${o.streak>=3?' ⚡':''}</td><td class="num v44bd" data-topic="${o.tag}" title="板块成分股内上涨占比（实时抓取, 甄别单兵龙头假主线）">—</td></tr>`).join('')+'</tbody>';
   const ind=CUR.industry||[];
   $id('ind-note').textContent=(ind.length)+' 个板块 · 涨跌榜由板块日K重建';
   $id('ind-desc').textContent=`上涨 ${CUR.summary.ind_up} / 下跌 ${CUR.summary.ind_down}。领涨 TOP10 与领跌 TOP10:`;
@@ -707,7 +748,7 @@ window.__v43dbg = { divergence, topicStrength }; // 测试钩子（只读）
     $id('hist-idx').textContent=`第 ${i+1} / ${DAYS.length} 个存档交易日${(dayN&&dayN.summary&&dayN.summary.zt_count==null)?' · ⚠ 池缺失（超保留深度，涨跌停/龙虎榜以「—」降级显示）':''}`;
     $id('hist-kpis').innerHTML=kpiHTML(DAYS[i]);
     const day0=DAYS[i];
-    $id('svg-h-topics').appendChild(barh(topTopics(day0,10),{val:t=>t.count,label:t=>t.tag,vfmt:v=>v+' 只',color:()=>UP,hi:x=>x<3,padL:140,padR:60}));
+    $id('svg-h-topics').appendChild(barh(topTopics(day0,10),{val:t=>t.count,label:t=>t.tag,vfmt:v=>v+' 只',color:()=>UP,hi:x=>x<3,padL:140,padR:60,onpick:t=>_openTopic(t.tag,day0)}));
     $id('h-topic-note').textContent=`强势股 ${day0.summary?.hot_count??'—'} 只`;
     $id('svg-h-lhb').appendChild(barh((day0.lhb||[]).slice(0,10),{val:s=>s.net_buy_wan,mid:360,label:s=>s.code+' '+s.name,vfmt:v=>(v>=0?'+':'')+fmtW(v),rowH:26,padL:0,padR:160,padB:6,onpick:s=>_openStock(s.code)}));
     const ind=day0.industry||[];
@@ -962,6 +1003,39 @@ window._openStock = function(code){
   const mask=$id('modal-mask');
   $id('m-close').onclick=()=>mask.classList.remove('on');
   mask.onclick=e=>{if(e.target===mask)mask.classList.remove('on');};
+  document.addEventListener('keydown',e=>{if(e.key==='Escape')mask.classList.remove('on');});
+})();
+/* ═══ 题材成分股弹窗（v4.8.6）: 题材热度榜点题材 → 列出成员股 → 再点开个股 ═══ */
+window._openTopic = function(tag, day){
+  const d = day || CUR;
+  const list = topicMembers(d, tag);
+  $id('tm-tag').textContent = tag;
+  const avg = list.length ? list.reduce((a,b)=>a+b.change_pct,0)/list.length : 0;
+  $id('tm-meta').textContent = `${d.trade_date} · ${list.length} 只 · 均涨 ${pct(avg)}`;
+  if(!list.length){
+    $id('tm-body').innerHTML='<div class="tm-empty">该题材当日无强势股归因记录</div>';
+  }else{
+    $id('tm-body').innerHTML='<div class="tm-list">'+list.map((s,i)=>`
+      <div class="tm-row" data-code="${s.code}">
+        <span class="rk num">${i+1}</span>
+        <span class="nm">${escHtml(s.name)}</span>
+        <span class="cd num">${s.code}</span>
+        <span class="zf num ${cls(s.change_pct)}">${pct(s.change_pct)}</span>
+        <span class="hs num">换手 ${s.huanshou.toFixed(2)}%</span>
+        <span class="tg">${s.tags.map(t=>`<span class="tag${t===tag?' self':''}">${escHtml(t)}</span>`).join('')}</span>
+      </div>`).join('')+'</div>';
+  }
+  $id('tmodal-mask').classList.add('on');
+};
+(function(){
+  const mask=$id('tmodal-mask');
+  $id('tm-close').onclick=()=>mask.classList.remove('on');
+  mask.onclick=e=>{if(e.target===mask)mask.classList.remove('on');};
+  $id('tm-body').addEventListener('click',e=>{
+    const row=e.target.closest('.tm-row'); if(!row)return;
+    mask.classList.remove('on');           // 先关题材窗，再开个股窗
+    window._openStock(row.dataset.code);
+  });
   document.addEventListener('keydown',e=>{if(e.key==='Escape')mask.classList.remove('on');});
 })();
 /*__LAB_MODULES__*/
