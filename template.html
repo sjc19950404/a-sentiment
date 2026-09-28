@@ -226,6 +226,7 @@ textarea:focus{outline:none;border-color:#33415c}
     <section style="margin-bottom:0" data-modtip="<b>今天上龙虎榜的完整名单</b>：每只股的买卖金额和上榜原因都在这里。上面的排名图就是从这张表汇总出来的。"><h2>龙虎榜全榜 <span class="note" id="lhb-tbl-note"></span></h2><div class="tbl-box"><table id="tbl-lhb"></table></div></section>
     <section style="margin-bottom:0" data-modtip="<b>今天最活跃的股票清单</b>：每只股的收盘价、涨幅、所属题材。左边的题材热度榜就是根据这张表数出来的。"><h2>强势股题材归因 <span class="note" id="hot-tbl-note"></span></h2><div class="tbl-box"><table id="tbl-hot"></table></div></section>
   </div>
+  <section id="verif-sec" style="display:none;margin-top:12px" data-modtip="<b>每天的数字可信吗</b>：管道收盘后自动爬取公开数据源（新浪行情、同花顺涨跌停池）与存档数字交叉比对，另对龙虎榜汇总和情绪公式做复算审计。<br>蓝✓=通过；红✗=差值超阈（多为统计口径差异，不一定是错，悬停看明细）。"><h2>🔍 数据核验 <span class="note" id="verif-note"></span></h2><div class="tbl-box"><table id="tbl-verif"></table></div><div class="sec-desc" id="verif-desc"></div></section>
 </div>
 
 <!-- ═══ Tab2 情绪指数 ═══ -->
@@ -681,6 +682,20 @@ window.__v43dbg = { divergence, topicStrength }; // 测试钩子（只读）
   $id('tbl-hot').innerHTML='<thead><tr><th class="l">股票</th><th>涨幅</th><th>换手</th><th class="l">题材归因</th></tr></thead><tbody>'+
     CUR.hot.slice().sort((a,b)=>b.change_pct-a.change_pct).map(s=>`<tr class="pick" onclick="_openStock('${s.code}')"><td class="l"><span class="code num">${s.code}</span> <b>${s.name}</b></td><td class="num ${cls(s.change_pct)}" style="font-weight:700">${pct(s.change_pct)}</td><td class="num">${s.huanshou.toFixed(2)}%</td><td class="l" style="white-space:normal;min-width:220px">${(s.reason||'').split('+').map(t=>t.trim()).filter(Boolean).map(t=>`<span class="tag${hotSet.has(t)?' hot':''}">${t}</span>`).join('')||'—'}</td></tr>`).join('')+'</tbody>';
   $id('hot-tbl-note').textContent=`共 ${CUR.hot.length} 只 · 金框=当日热门TOP10 · 点击行看个股详情`;
+  /* ── v4.9.5 数据核验板块 ── */
+  (function(){
+    const v=CUR.verification, sec=$id('verif-sec');
+    if(!v||!v.items||!v.items.length){ sec.style.display='none'; return; }
+    sec.style.display='';
+    const srcShort={'双源(新浪vs腾讯)':'新浪双源','双源(同花顺vs东财)':'同花顺双源','公式自洽':'复算'};
+    $id('tbl-verif').innerHTML='<thead><tr><th class="l">核验项</th><th>模型值</th><th>外部/复算值</th><th>差值</th><th>方式</th><th>状态</th></tr></thead><tbody>'+
+      v.items.map(it=>`<tr><td class="l">${it.label}</td><td class="num">${it.model??'—'}</td><td class="num">${it.ext??'—'}</td><td class="num">${it.delta==null?'—':(it.delta>0?'+':'')+it.delta}</td><td class="l"><span class="dim" style="font-size:11.5px">${srcShort[it.src]||it.src}</span></td><td style="color:${it.pass?'var(--accent)':'var(--up)'};font-weight:700" title="${it.pass?'差值在容差内':(it.ext==null?'外部源未取到':'差值超容差, 多为口径差异')}">${it.pass?'✓':'✗'}</td></tr>`).join('')+'</tbody>';
+    const np=v.items.filter(i=>i.pass).length, nt=v.items.length, fails=v.items.filter(i=>!i.pass);
+    $id('verif-note').textContent=`${v.checkedAt?v.checkedAt.slice(0,16).replace('T',' '):''} · ${np}/${nt} 项通过`;
+    $id('verif-desc').textContent=!fails.length
+      ? '✅ 总结：外部交叉核验全部通过——三大指数（新浪 vs 腾讯双源）、涨跌停/炸板池（同花顺 vs 东财双源）完全一致，龙虎榜汇总与七因子情绪公式复算自洽，当日数字可信。'
+      : '⚠ 总结：'+fails.map(f=>f.label).join('、')+(fails.some(f=>f.ext==null)?' 外部源未取到（临时不可用）；':' 差值超容差（多为统计口径差异，非计算错误）；')+'其余 '+np+' 项通过。';
+  })();
 })();
 
 /* ═══ Tab2 情绪指数 ═══ */

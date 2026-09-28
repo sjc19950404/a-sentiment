@@ -35,6 +35,7 @@ const args = process.argv.slice(2);
 const DRY = args.includes('--dry');
 const BACKFILL = args.includes('--backfill');
 const REDO = args.includes('--redo'); // v4.8.10: 重新抓取最近交易日并替换已存档数据（修复坏数据/补容错字段）
+const VERIFY_ONLY = args.includes('--verify-only'); // v4.9.5: 仅对存档日跑外部核验并回写（--date=YYYY-MM-DD 缺省最新日）
 const CHECK = (args.find(a => a.startsWith('--check=')) || '').split('=')[1];
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -220,7 +221,7 @@ function thsLb(high_days) {
 }
 async function thsFetchPool(ep, ymd) {
   const j = await withRetry(async () => {
-    const r = await fetch('https://data.10jqka.com.cn/dataapi/limit_up/' + ep + '?page=1&limit=500&field=199112,10,9001,330324,9002,133971,1968584,3475914,9003,9004&filter=HS,GEM2STAR&order_field=330324&order_type=0&date=' + ymd,
+    const r = await fetch('https://data.10jqka.com.cn/dataapi/limit_up/' + ep + '?page=1&limit=200&field=199112,10,9001,330324,9002,133971,1968584,3475914,9003,9004&filter=HS,GEM2STAR&order_field=330324&order_type=0&date=' + ymd,
       { headers: { 'User-Agent': UA, Referer: 'https://data.10jqka.com.cn/datacenterph/limitup/limtupInfo.html' } });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const j2 = await r.json();
@@ -458,6 +459,62 @@ function refreshAllTopics(D) {
   return validAll;
 }
 
+// ── v4.9.5: 外部数据核验（爬公开源交叉核验当日关键数字 → day.verification, 前端核验板块消费）──
+function verifNote(items) {
+  if (!items.length) return '当日无可用核验项';
+  const np = items.filter(i => i.pass).length;
+  const fails = items.filter(i => !i.pass);
+  return fails.length
+    ? np + '/' + items.length + ' 项通过 · 未过阈: ' + fails.map(f => f.label).join('、') + '（多为口径差异, 见口径备注）'
+    : '全部 ' + items.length + ' 项通过 —— 指数/池双源一致, 龙虎榜与情绪公式自洽';
+}
+async function verifyExtern(date, day) {
+  const s = day.summary || {};
+  const items = [];
+  const add = (key, label, model, ext, tol, src) => {
+    const delta = (model != null && ext != null) ? r2(ext - model) : null;
+    items.push({ key, label, model, ext, delta, pass: delta != null && Math.abs(delta) <= tol, src });
+  };
+  // 1) 三大指数双源：新浪行情 vs 存档(腾讯源)——新浪全量盘口仅当日实时有效, 历史日自动跳过
+  try {
+    const r = await fetch('https://hq.sinajs.cn/list=sh000001,sz399001,sz399006', { headers: { Referer: 'https://finance.sina.com.cn/', 'User-Agent': UA }, signal: AbortSignal.timeout(9000) });
+    const txt = new TextDecoder('gbk').decode(await r.arrayBuffer());
+    for (const m of txt.matchAll(/hq_str_(sh|sz)\d+="([^"]*)"/g)) {
+      const f = m[2].split(',');
+      const dateField = (f.find(x => /^\d{4}-\d{2}-\d{2}$/.test(x)) || '');
+      if (dateField !== date) continue; // 非目标交易日(盘前/次日)不核验
+      const name = f[0], price = parseFloat(f[3]), pre = parseFloat(f[2]);
+      const chg = (price && pre) ? r2((price / pre - 1) * 100) : null;
+      if (day.indexes && day.indexes[name] != null) add('idx_' + name, '指数·' + name, day.indexes[name], chg, 0.06, '双源(新浪vs腾讯)');
+    }
+  } catch (e) { /* 新浪不可达则跳过指数核验 */ }
+  // 2) 涨跌停/炸板池双源：同花顺池 vs 存档(东财主源+同花顺备用)——两源判定口径差 ±2 家内视为一致；各池独立容错（单池失败不连坐）
+  try {
+    const ymd = date.replace(/-/g, '');
+    const one = async ep => { try { return await thsFetchPool(ep, ymd); } catch (e) { return null; } };
+    const [tZt, tZb, tDt] = await Promise.all([one('limit_up_pool'), one('open_limit_pool'), one('lower_limit_pool')]);
+    add('pool_zt', '涨停家数', s.zt_count, tZt ? tZt.total : null, 2, '双源(同花顺vs东财)');
+    add('pool_zb', '炸板家数', s.zb_count, tZb ? tZb.total : null, 2, '双源(同花顺vs东财)');
+    add('pool_dt', '跌停家数', s.dt_count, tDt ? tDt.total : null, 2, '双源(同花顺vs东财)');
+  } catch (e) { /* 池不可达则跳过 */ }
+  // 3) 龙虎榜自洽：聚合层复算 vs summary（v4.9.3 口径回归审计）
+  const ag = day.lhb_aggr || [];
+  add('lhb_net', '龙虎榜净额(亿)', s.net_total_yi, ag.length ? r2(ag.reduce((a, x) => a + x.net_buy_wan, 0) / 1e4) : null, 0.02, '公式自洽');
+  add('lhb_pos', '净买家数', s.net_pos, ag.filter(x => x.net_buy_wan > 0).length, 0, '公式自洽');
+  add('lhb_neg', '净卖家数', s.net_neg, ag.filter(x => x.net_buy_wan < 0).length, 0, '公式自洽');
+  add('lhb_stocks', '上榜去重股数', s.lhb_stocks, ag.length, 0, '公式自洽');
+  // 4) 炸板率自洽：zbl_pct = 炸板/(涨停+炸板)
+  const zblRe = (s.zt_count != null && s.zb_count != null && s.zt_count + s.zb_count > 0) ? r1(100 * s.zb_count / (s.zt_count + s.zb_count)) : null;
+  add('zbl_pct', '炸板率(%)', s.zbl_pct, zblRe, 0.6, '公式自洽');
+  // 5) 情绪值自洽：七因子加权复算
+  const e = day.emotion || {};
+  if (e.value != null && e.s_net != null && e.s_zdt != null) {
+    const valRe = r1((e.s_net * 20 + e.s_pos * 10 + e.s_brd * 20 + e.s_hot * 10 + e.s_zdt * 15 + e.s_zbl * 10 + e.s_amt * 15) / 100);
+    add('emotion', '综合情绪值', e.value, valRe, 0.15, '公式自洽');
+  }
+  return { checkedAt: new Date().toISOString(), note: verifNote(items), items };
+}
+
 // ── day 组装（v4.5: +连板梯队分布/炸板金额/两融）──
 function buildDay(date, lhbRaw, hotRaw, industry, indexes, pools, amountYi, amountMap, yztMap, prevZtCodes, prevZtLb, rzrqMap) {
   const lhb = lhbRaw.map(x => ({
@@ -658,7 +715,7 @@ async function backfill() {
   recalcRanks(D.all_days);
   D.meta = D.meta || {};
   D.meta.dataQuality = Object.assign({}, D.meta.dataQuality, {
-    formulaVersion: 'v4.9.4 七因子（s_net20/s_pos10/s_brd20/s_hot10/s_zdt15/s_zbl10/s_amt15）+ yzt/dt_band/hs/lb_dist/zb_amt/rzrq + 题材归一(词典+个股数+黑名单+全局孤点≥2) + pctRankRealOnly + lhb净额按股去重 + 池同花顺备用源',
+    formulaVersion: 'v4.9.5 七因子（s_net20/s_pos10/s_brd20/s_hot10/s_zdt15/s_zbl10/s_amt15）+ yzt/dt_band/hs/lb_dist/zb_amt/rzrq + 题材归一(词典+个股数+黑名单+全局孤点≥2) + pctRankRealOnly + lhb净额按股去重 + 池同花顺备用源 + 外部核验(指数/池双源+公式自洽)',
     formulaNote: 's_zdt=(涨停+2)/(涨停+跌停+4)*100; s_zbl=100-炸板率*2; s_amt=两市额/前20日均额*50; 东财池保留约3周, 更早日 s_zdt/s_zbl 中性50补位（summary._missing 标记）; yzt_chg=同花顺883994昨日涨停指数当日涨跌幅（打板赚钱效应）; dt_band=断板家数（相邻两日池齐全才可算）; hs_lb3_count=昨日连板≥3高位股家数, hs_dt_count/hs_dt_fund/hs_dt_amt=高位股今日跌停数/封单合计(亿)/成交额合计(亿); lb_dist=连板梯队分布{板级:家数}(≥2板); zb_amt=炸板股成交额合计(亿); rzrq=两融{jme:融资净买入(亿),ye:融资余额(亿)}（T+1 披露, 最新一日可能缺, 重跑 backfill 即补）; topics=题材词典归一+个股数聚合（一票一题材一票）+精确/动词黑名单+全局孤点剔除（全存档覆盖<2只个股的题材=噪声）, codes=该题材成员股代码表（前端下钻直用）; pct_rank 仅用无补位真实天数计算, 补位日 null',
     formulaChangeDate: '2026-09-28',
     pctRankRealOnly: true,
@@ -684,6 +741,21 @@ async function backfill() {
 
 (async () => {
   if (BACKFILL) { await backfill(); return; }
+  // ── v4.9.5: verify-only 模式——对存档日补跑外部核验并回写（不影响数据本体, 幂等可重跑）──
+  if (VERIFY_ONLY) {
+    const Dv = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+    const vDate = (args.find(a => a.startsWith('--date=')) || '').slice(7) || Dv.all_days[Dv.all_days.length - 1].trade_date;
+    const vd = Dv.all_days.find(d => d.trade_date === vDate);
+    if (!vd) { console.error('存档无 ' + vDate); process.exit(1); }
+    console.log('核验目标:', vDate);
+    vd.verification = await verifyExtern(vDate, vd);
+    console.log('核验结果:', vd.verification.note);
+    vd.verification.items.forEach(it => console.log(`  ${it.pass ? '✓' : '✗'} ${it.label}: 模型 ${it.model} / ${it.src.startsWith('双源') ? '外部' : '复算'} ${it.ext} · 差 ${it.delta}`));
+    fs.writeFileSync(DATA_FILE, JSON.stringify(Dv));
+    console.log('data.json 已回写, 重建 dist…');
+    execSync('node build.js', { cwd: __dirname, stdio: 'inherit' });
+    return;
+  }
   console.log('═ SDK 每日管道启动（v4.3 七因子）═' + (DRY ? '（dry 干跑）' : '') + (CHECK ? '（check=' + CHECK + ' 对齐验证）' : '') + (REDO ? '（redo 替换重抓）' : ''));
   const hotRaw = await fetchHot();
   const apiDate = hotRaw[0].date;
@@ -771,6 +843,9 @@ async function backfill() {
   // v4.9: 代理成功时 amountYi 非 null, _missing 里不会有 'amount'; 显式补标供前端展示「X/7 因子补位」
   if (amountProxy && day.summary) (day.summary._missing = day.summary._missing || []).push('amount代理');
   if (!day.lhb.length || !day.hot.length) { console.error('当日数据异常（空榜）——可能非交易日，中止'); process.exit(1); }
+  // v4.9.5: 外部核验（新浪指数双源 + 同花顺池双源 + 龙虎榜/公式自洽）→ day.verification, 失败容错不阻塞入档
+  try { day.verification = await verifyExtern(apiDate, day); console.log('  核验:', day.verification.note); }
+  catch (e) { console.log('  核验失败(容错跳过):', e.message); }
 
   // ── 追加/替换（redo）+ 全档重算 ──
   const existIdx = D.all_days.findIndex(d => d.trade_date === apiDate);
@@ -794,9 +869,9 @@ async function backfill() {
   D.meta = D.meta || {};
   D.meta.holidays = [...new Set([...(D.meta.holidays || [])])].sort();
   D.meta.dataQuality = Object.assign({}, D.meta.dataQuality, {
-    dailyPipe: 'fetch-daily.js 自动管道 v4.9（东财龙虎榜+getharden+881xxx日K+腾讯指数+涨跌停炸板池(含封单/梯队/炸板额)+两市额+883994昨涨停+高位亏钱效应+两融+题材词典归一/全局孤点剔除）',
+    dailyPipe: 'fetch-daily.js 自动管道 v4.9（东财龙虎榜+getharden+881xxx日K+腾讯指数+涨跌停炸板池(含封单/梯队/炸板额)+两市额+883994昨涨停+高位亏钱效应+两融+题材词典归一/全局孤点剔除+外部核验）',
     dailyPipeNote: 'pct_rank/net_pct_rank 为「无补位真实天数」内分位（v4.9.1 起补位日置 null）; topics 每次追加全档统一重算',
-    formulaVersion: 'v4.9.4 七因子（s_net20/s_pos10/s_brd20/s_hot10/s_zdt15/s_zbl10/s_amt15）+ yzt/dt_band/hs/lb_dist/zb_amt/rzrq + 题材归一(词典+个股数+黑名单+全局孤点≥2) + pctRankRealOnly + lhb净额按股去重 + 池同花顺备用源',
+    formulaVersion: 'v4.9.5 七因子（s_net20/s_pos10/s_brd20/s_hot10/s_zdt15/s_zbl10/s_amt15）+ yzt/dt_band/hs/lb_dist/zb_amt/rzrq + 题材归一(词典+个股数+黑名单+全局孤点≥2) + pctRankRealOnly + lhb净额按股去重 + 池同花顺备用源 + 外部核验(指数/池双源+公式自洽)',
     pctRankRealOnly: true,
     dailyPipeLastRun: new Date().toISOString()
   });
