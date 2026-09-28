@@ -619,9 +619,8 @@ async function backfill() {
     backfilledAt: new Date().toISOString()
   });
   fs.copyFileSync(DATA_FILE, path.join(__dirname, 'data.backup-pre-v45.json'));
-  fs.writeFileSync(DATA_FILE, JSON.stringify(D));
-  console.log('\n回填完成: 真实池 ' + filled + ' 天 · 缺池 ' + missPool + '（中性补位） · 缺额 ' + missAmt + ' · 涨停成员 ' + hasCodes + ' 天 · 高位亏钱效应 ' + hasHs + ' 天');
   // v4.9.1: 健康自检（与主流程同口径, 入 meta 供前端 S6 复核/告警）
+  // 注意: 必须在 writeFileSync 之前写内存（v4.9.1 首版写盘在后, health 永不落盘——已修）
   {
     const missDays = D.all_days.filter(d => ((d.summary && d.summary._missing) || []).length).length;
     const issues = [];
@@ -629,6 +628,8 @@ async function backfill() {
     D.meta.dataQuality.health = { checkedAt: new Date().toISOString(), totalDays: D.all_days.length, missingDays: missDays, issues };
     console.log('健康自检: ' + (issues.length ? '⚠ ' + issues.join(' ; ') : '✓ 无异常') + `（补位 ${missDays}/${D.all_days.length} 天）`);
   }
+  fs.writeFileSync(DATA_FILE, JSON.stringify(D));
+  console.log('\n回填完成: 真实池 ' + filled + ' 天 · 缺池 ' + missPool + '（中性补位） · 缺额 ' + missAmt + ' · 涨停成员 ' + hasCodes + ' 天 · 高位亏钱效应 ' + hasHs + ' 天');
   console.log('备份: data.backup-pre-v45.json · 存档 ' + D.all_days.length + ' 天已重算');
   console.log('重建 dist…');
   execSync('node build.js', { cwd: __dirname, stdio: 'inherit' });
