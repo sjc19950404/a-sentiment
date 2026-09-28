@@ -34,6 +34,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const args = process.argv.slice(2);
 const DRY = args.includes('--dry');
 const BACKFILL = args.includes('--backfill');
+const REDO = args.includes('--redo'); // v4.8.10: 重新抓取最近交易日并替换已存档数据（修复坏数据/补容错字段）
 const CHECK = (args.find(a => a.startsWith('--check=')) || '').split('=')[1];
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -112,23 +113,69 @@ async function fetchBoards(date) {
   return rows.sort((a, b) => b.change_pct - a.change_pct);
 }
 
-// ── 源4: 腾讯三大指数（当日涨跌幅）──
+// ── 源4: 腾讯三大指数（当日涨跌幅；v4.8.10 加 3 次重试——18:30 管道实测偶发网络抖动置 null）──
 async function fetchIndexes(date) {
-  try {
-    const r = await fetch('https://qt.gtimg.cn/q=sh000001,sz399001,sz399006', { headers: { 'User-Agent': UA } });
-    const txt = new TextDecoder('gbk').decode(await r.arrayBuffer());
-    const idx = {}; let ok = false;
-    for (const m of txt.matchAll(/v_(sh|sz)\d+="([^"]*)"/g)) {
-      const f = m[2].split('~');
-      const name = f[1], dateField = (f[30] || '').replace(/\//g, '-'); // YY/MM/DD → 不匹配即跳过
-      const ymdNum = (f[30] || '').replace(/\D/g, '');
-      const ymd = ymdNum.length === 8 ? ymdNum.slice(0, 4) + '-' + ymdNum.slice(4, 6) + '-' + ymdNum.slice(6) : '';
-      if (!ymd || ymd !== date) continue; // 非当日（盘前/异常）不写入
-      const chg = parseFloat(f[32]);
-      if (!isNaN(chg)) { idx[name] = r2(chg); ok = true; }
-    }
-    return ok ? idx : null;
-  } catch (e) { return null; }
+  for (let att = 0; att < 3; att++) {
+    try {
+      const r = await fetch('https://qt.gtimg.cn/q=sh000001,sz399001,sz399006', { headers: { 'User-Agent': UA } });
+      const txt = new TextDecoder('gbk').decode(await r.arrayBuffer());
+      const idx = {}; let ok = false;
+      for (const m of txt.matchAll(/v_(sh|sz)\d+="([^"]*)"/g)) {
+        const f = m[2].split('~');
+        const name = f[1], dateField = (f[30] || '').replace(/\//g, '-'); // YY/MM/DD → 不匹配即跳过
+        // v4.8.10: 腾讯已把 f[30] 从 8 位日期改为 14 位时间戳（20260928161401），兼容两种格式取前 8 位
+        const ymdNum = (f[30] || '').replace(/\D/g, '');
+        const ymd = ymdNum.length >= 8 ? ymdNum.slice(0, 4) + '-' + ymdNum.slice(4, 6) + '-' + ymdNum.slice(6, 8) : '';
+        if (!ymd || ymd !== date) continue; // 非当日（盘前/异常）不写入
+        const chg = parseFloat(f[32]);
+        if (!isNaN(chg)) { idx[name] = r2(chg); ok = true; }
+      }
+      if (ok) return idx;
+    } catch (e) { /* 重试 */ }
+    await sleep(600);
+  }
+  return null;
+}
+
+// ── v4.8.10: 强势股行情补全（腾讯 qt.gtimg 批量，60只/批）──
+// getharden 接口自 2026-09-28 起不再返回 close/zhangfu/huanshou（实测仅 id/name/code/reason/date/market 六字段），
+// 管道原 x.zhangfu||0 会把 0 直接入档 → 页面题材热度/强度榜均涨幅·均换手全为 0。
+// 修复：行情三字段改由腾讯批量拉取直接覆盖（腾讯为权威源，接口字段若恢复也不回退）。
+// 字段位（GB18030 文本 ~ 分隔）: f3=现价 f4=昨收 f32=涨跌幅% f38=换手率%
+async function fetchHotQuotes(codes) {
+  const out = {}; // code → {close, change_pct, huanshou}
+  const sym = c => /^6/.test(c) ? 'sh' + c : (/^[03]/.test(c) ? 'sz' + c : null); // 分片库/行情同覆盖面：沪深，北交所跳过
+  for (let i = 0; i < codes.length; i += 60) {
+    const batch = codes.slice(i, i + 60).map(sym).filter(Boolean);
+    if (!batch.length) continue;
+    try {
+      const r = await fetch('https://qt.gtimg.cn/q=' + batch.join(','), { headers: { 'User-Agent': UA } });
+      const txt = new TextDecoder('gbk').decode(await r.arrayBuffer());
+      for (const m of txt.matchAll(/v_(?:sh|sz|bj)(\d{6})="([^"]*)"/g)) {
+        const f = m[2].split('~');
+        const close = parseFloat(f[3]), pre = parseFloat(f[4]), chg = parseFloat(f[32]), hs = parseFloat(f[38]);
+        if (isNaN(close) || close <= 0) continue;
+        out[m[1]] = {
+          close,
+          change_pct: !isNaN(chg) ? chg : (pre > 0 ? r2((close / pre - 1) * 100) : 0),
+          huanshou: isNaN(hs) ? 0 : hs
+        };
+      }
+    } catch (e) { /* 单批失败容错，下一批继续 */ }
+    await sleep(300);
+  }
+  return out;
+}
+async function enrichHotQuotes(hotRaw) {
+  const codes = [...new Set(hotRaw.map(x => x.code).filter(Boolean))];
+  let qm = {};
+  try { qm = await fetchHotQuotes(codes); } catch (e) { return { hit: 0, total: codes.length }; }
+  let hit = 0;
+  hotRaw.forEach(x => {
+    const q = qm[x.code];
+    if (q) { hit++; x.close = q.close; x.zhangfu = q.change_pct; x.huanshou = q.huanshou; } // 直接覆盖
+  });
+  return { hit, total: codes.length };
 }
 
 // ── 源5: 东财涨停/炸板/跌停池（须带 sort; date 支持历史但保留约 3 周）──
@@ -435,12 +482,16 @@ async function backfill() {
 
 (async () => {
   if (BACKFILL) { await backfill(); return; }
-  console.log('═ SDK 每日管道启动（v4.3 七因子）═' + (DRY ? '（dry 干跑）' : '') + (CHECK ? '（check=' + CHECK + ' 对齐验证）' : ''));
+  console.log('═ SDK 每日管道启动（v4.3 七因子）═' + (DRY ? '（dry 干跑）' : '') + (CHECK ? '（check=' + CHECK + ' 对齐验证）' : '') + (REDO ? '（redo 替换重抓）' : ''));
   const hotRaw = await fetchHot();
   const apiDate = hotRaw[0].date;
   console.log('最近交易日:', apiDate, '· 强势股', hotRaw.length, '只');
   const D = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
   const dates = D.all_days.map(d => d.trade_date);
+
+  // ── v4.8.10: 强势股行情补全（腾讯源·直接覆盖）——getharden 不再提供 close/zhangfu/huanshou ──
+  const qEnrich = await enrichHotQuotes(hotRaw);
+  console.log('  强势股行情补全（腾讯源）:', qEnrich.hit + '/' + qEnrich.total, '只');
 
   // ── check 模式: 指定日（须已在存档）抓取 diff ──
   if (CHECK) {
@@ -466,8 +517,9 @@ async function backfill() {
     return;
   }
 
-  // ── 幂等: 已是最新 ──
-  if (dates.includes(apiDate)) { console.log('✓ ' + apiDate + ' 已在存档（共 ' + dates.length + ' 天），无新交易日，退出'); return; }
+  // ── 幂等: 已是最新（redo 模式豁免——重新抓取并替换当日）──
+  if (dates.includes(apiDate) && !REDO) { console.log('✓ ' + apiDate + ' 已在存档（共 ' + dates.length + ' 天），无新交易日，退出'); return; }
+  if (REDO && !dates.includes(apiDate)) console.log('⚠ --redo 但 ' + apiDate + ' 不在档，按普通新增执行');
 
   // ── 抓取其余源 ──
   console.log('抓取龙虎榜…');
@@ -497,7 +549,10 @@ async function backfill() {
   console.log('抓取两融历史（T+1 披露）…');
   const rzrqMap = await fetchRzrqMap();
   const amountYi = amountMap ? (amountMap[apiDate.replace(/-/g, '')] || null) : null;
-  const lastDay = D.all_days[D.all_days.length - 1];
+  // v4.8.10: redo 替换模式下「前一交易日」须取目标日之前的存档——最后一项就是目标日自己，
+  // 自我对比会把 dt_band（断板数）错算成 0
+  const tgtIdx = dates.indexOf(apiDate);
+  const lastDay = (REDO && tgtIdx > 0) ? D.all_days[tgtIdx - 1] : D.all_days[D.all_days.length - 1];
   const prevZtCodes = (lastDay && lastDay.summary) ? (lastDay.summary.zt_codes || null) : null;
   const prevZtLb = (lastDay && lastDay.summary) ? (lastDay.summary.zt_lb || null) : null;
   console.log('  池:', pools ? ('涨停 ' + pools.zt + ' · 炸板 ' + pools.zb + ' · 跌停 ' + pools.dt + ' · 最高连板 ' + pools.max_lb) : '超保留深度（中性补位）',
@@ -507,8 +562,19 @@ async function backfill() {
   const day = buildDay(apiDate, lhbRaw, hotRaw, industry, indexes, pools, amountYi, amountMap, yztMap, prevZtCodes, prevZtLb, rzrqMap);
   if (!day.lhb.length || !day.hot.length) { console.error('当日数据异常（空榜）——可能非交易日，中止'); process.exit(1); }
 
-  // ── 追加 + 全档重算 ──
-  D.all_days.push(day);
+  // ── 追加/替换（redo）+ 全档重算 ──
+  const existIdx = D.all_days.findIndex(d => d.trade_date === apiDate);
+  if (existIdx >= 0) {
+    console.log('REDO: 替换已有存档 ' + apiDate + '（hot ' + (D.all_days[existIdx].hot || []).length + '→' + day.hot.length + ' 只 · lhb ' + (D.all_days[existIdx].lhb_aggr || D.all_days[existIdx].lhb || []).length + '→' + day.lhb_aggr.length + ' 只）');
+    D.all_days[existIdx] = day;
+    // stocks 该日条目先移除，appendStocks 以新值重写
+    Object.values(D.stocks).forEach(st => {
+      const di = (st.days || []).indexOf(apiDate);
+      if (di >= 0) { st.days.splice(di, 1); (st.closes || []).splice(di, 1); }
+    });
+  } else {
+    D.all_days.push(day);
+  }
   D.all_days.sort((a, b) => a.trade_date < b.trade_date ? -1 : 1);
   recalcRanks(D.all_days);
   appendStocks(D, day);
