@@ -99,6 +99,26 @@ sentiment-dashboard/
 - **数据快照归档**：每日数据更新后自动上传 `data-YYYY-MM-DD.json` 到 GitHub Release「data-archive」（滚动累积，仓库误删可按日期恢复）
 - 天然镜像备忘：`cdn.jsdelivr.net/gh/sjc19950404/a-sentiment@main/data.json` 可直接引用（jsDelivr 对 GitHub 仓库文件的 CDN 镜像）
 
+## v4.9.1 题材降噪原型融合 + 分位仅真实天数 + 管道健康自检（2026-09-28）
+
+用户交接稿随附可运行原型 `normalize_themes.py`（ThemeDenoiser 类，实测新晋 106→16、退潮 155→8），本版把原型成果全量移植进 fetch-daily.js 管道（原型三文件归档于 `tools/`），formulaVersion 升 v4.9.1：
+
+### 题材归一升级：精确词典优先 + 全局孤点剔除
+- **精确词典 `TOPIC_CANON`**（~130 条 13 族，原型全量移植）第一优先：AI算力/PCB/半导体/光通信/军工/医药/新能源车/机器人/并购重组/国企改革等族的全部已知写法精确映射
+- **精确黑名单 `TOPIC_BLACKLIST`**（Set）：拟收购界面财联社等单票专属诱因精确拦截
+- **正则家族 `TOPIC_FAMILIES` 兜底**：词典未收录的新变体靠泛化正则归族——实测优于原型（9/28「国企改革」聚合 6 股 vs 原型 demo 3 股，新变体被正则捕获）
+- **全局孤点剔除**（`computeValidThemes`）：扫全存档统计每个题材标签覆盖的个股数，**历史任何一天覆盖 ≥2 只（MIN_TOPIC_STOCKS_GLOBAL=2）才有效**——当日 1 股但历史多日的合法题材保留，彻底孤点直接丢弃（区别于 v4.9 当日阈值口径）
+- 归一链：精确词典 → 精确黑名单 → 正则家族 → 动词黑名单 → 原样保留；9/28 主线实算 = 国企改革 6 / 机器人 4 / 医药 4 / 业绩线 3 / 并购重组 3 / 网络安全 3，与原型 demo 输出（机器人 4 / 医药 4）完全吻合
+
+### pct_rank 仅用真实天数（交接稿问题二明确要求）
+- `recalcRanks` 重写：分位只在**无补位因子的真实日**集合内计算（realDays = `_missing` 为空的天）；补位日 `pct_rank`/`net_pct_rank` 置 null，前端 `??'—'` 兜底显示
+- 当前档：15 个补位日不参与、16 个真实日有值；`meta.pctRankRealOnly=true` 标记口径
+
+### 管道健康自检（S6 从展示面板升级为自判）
+- 每次管道跑完（主流程 + backfill 双路径）写入 `meta.dataQuality.health = {checkedAt, totalDays, missingDays, issues[]}`
+- issues 检查项：补位天占比 >40%、当日池缺失（涨停/跌停/炸板全空）、yzt 缺失——异常天列出具体日期
+- 后续可接告警通道（现为 GitHub Issue 告警的补充数据源）
+
 ## v4.8 全市场K线库（2026-09-27 · 仓库分片架构）
 
 ### 为什么不是后端数据库

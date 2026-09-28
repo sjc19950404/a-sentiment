@@ -325,33 +325,68 @@ async function fetchRzrqMap() {
   return Object.keys(out).length ? out : null;
 }
 
-// ── v4.9 题材降噪: 词典归一 + 个股数聚合 + 专属诱因黑名单 + 跨个股阈值 ──
-// 旧口径 = 把诱因串按「+」拆词频: 单只票的专属诱因（"拟收购界面财联社"）被当题材、
-// 同概念多写法（上海/广州国资）被拆散 → "新晋 106 / 退潮 155" 级噪声。四步修复:
-//   1) 归一家族: 正则命中 → 标准题材（种子词典, 可增量维护; 只归「家族变体」明确的类, 其余保留原词）
-//   2) 个股数聚合: 一只票对一题材只投 1 票（Set 去重）, count = 个股数 而非词频
-//   3) 黑名单: 词典未命中的 token 含公告动作动词（拟收购/签署/减持…）= 专属诱因/一次性事件 → 扔
-//   4) 阈值: 跨 ≥2 只不同个股才算题材（孤点天然过滤; MIN_TOPIC_STOCKS 可调）
+// ── v4.9.1 题材降噪（融合 normalize_themes.py 原型）──
+// 原型：精确词典 CANON + 精确黑名单 + 全局孤点剔除（fit 全存档, 覆盖 ≥2 只个股才算题材）
+// 本版在原型之上保留 v4.9 的正则家族/动词黑名单作兜底（泛化词典未收录的新变体, 如明日新「XX国资」）
+// 1) 精确词典: 表面变体 → 标准题材（原型 CANON 全量移植, 种子可增量维护）
+const TOPIC_CANON = {
+  '上海国资':'国企改革','广州国资':'国企改革','广州国资入主':'国企改革','深圳国资':'国企改革','福建国资':'国企改革','珠海国资':'国企改革','黑龙江国资':'国企改革','国资背景':'国企改革','国企':'国企改革','国企背景':'国企改革','国资':'国企改革','央企':'国企改革',
+  '控股变更':'并购重组','控制权变更':'并购重组','控制权拟变更':'并购重组','控股股东拟变更':'并购重组','资产重组':'并购重组','重大资产重组':'并购重组','拟收购':'并购重组','股份转让':'并购重组','股权转让':'并购重组','溢价转让':'并购重组','协议转让':'并购重组','定增审核':'并购重组','大股东增持':'并购重组',
+  'AI应用':'AI算力','AI应用出海':'AI算力','AI终端':'AI算力','AI服务器':'AI算力','AI服务器电源':'AI算力','AI算力':'AI算力','AI文旅':'AI算力','智算云':'AI算力','算力':'AI算力','算力硬件':'AI算力','算力租赁':'AI算力','算力基础设施':'AI算力','垂直大模型':'AI算力','智谱AI':'AI算力','政务智能体':'AI算力','政务数字化':'AI算力',
+  '文化传媒':'文化传媒','图书发行':'文化传媒','教科书发行':'文化传媒','数字教育':'文化传媒','广电网络':'文化传媒','杭州日报':'文化传媒','影视制作':'文化传媒','视听大数据':'文化传媒','视听安全':'文化传媒','媒体内容安全监测':'文化传媒','出版发行':'文化传媒',
+  '创新药':'医药','AI医疗':'医药','中药大健康':'医药','独家中药':'医药','化学制药':'医药','医疗器械':'医药','体外诊断':'医药','基因检测':'医药','医药数字化':'医药','医药流通':'医药','药品注册':'医药','解热镇痛':'医药','呼吸用药':'医药','皮肤科学':'医药','阿尔茨海默病':'医药','三代测序':'医药','健康机器人':'医药',
+  'PCB':'PCB','PCB概念':'PCB','PCB刀具':'PCB','PCB用化学试剂':'PCB','PCB设备':'PCB','PCB铜箔':'PCB','高端PCB':'PCB','高阶HDI':'PCB','HDI板':'PCB','覆铜板':'PCB','高速覆铜板':'PCB',
+  '光模块':'光通信','高速光模块':'光通信','光纤光缆':'光通信','光通信':'光通信','光通信测试':'光通信','PI膜':'光通信','TAC膜':'光通信','MLCC':'光通信','MLCC离型膜':'光通信',
+  '半导体':'半导体','半导体IP':'半导体','半导体硅片':'半导体','半导体设备':'半导体','半导体测试':'半导体','半导体装备':'半导体','半导体超纯水膜':'半导体','功率半导体IDM':'半导体','碳化硅衬底':'半导体','先进封装':'半导体',
+  '液冷':'液冷','液冷散热':'液冷','液冷服务器':'液冷',
+  '电子化学品':'电子','电子玻璃':'电子','玻璃基板':'电子','消费电子':'电子','消费电子包装':'电子','苹果供应链':'电子','存储芯片':'电子',
+  '机器人':'机器人','机器人缝制':'机器人','机器人轴承':'机器人','机器人电池':'机器人','机器人线束':'机器人','机器人结构件':'机器人','七腾机器人':'机器人','水务机器人':'机器人','环卫机器人':'机器人','工业母机':'机器人','具身智能':'机器人','人形机器人':'机器人','间接投资宇树科技':'机器人',
+  '固态电池':'新能源','储能':'新能源','锂电铜箔':'新能源','电池箔':'新能源','氢能汽车':'新能源','氢氟酸':'新能源','清洁能源':'新能源','海上风电':'新能源','风电铸件':'新能源','风电轴承':'新能源','风电齿轮箱':'新能源','风电设备':'新能源',
+  '智能驾驶':'智能网','车联网':'智能网','车路云':'智能网','智能电网':'智能网','智能输配电':'智能网','智能配电':'智能网','V2G':'智能网','特高压':'智能网','虚拟电厂':'智能网',
+  '商业航天':'商业航天','卫星智算':'商业航天','低空经济':'低空经济',
+  '业绩增长':'业绩线','净利增长':'业绩线','业绩扭亏':'业绩线','半年报增长':'业绩线','半年报减亏':'业绩线','中报增长':'业绩线','中报扭亏':'业绩线','扭亏为盈':'业绩线','净利润增长':'业绩线',
+  'AI安全':'网络安全','网络安全':'网络安全','网络靶场':'网络安全','数据安全':'网络安全','数据标注':'网络安全','数字风洞':'网络安全',
+};
+// 2) 精确黑名单: 单票专属诱因 / 不可投资题材（原型 BLACKLIST 全量移植）
+const TOPIC_BLACKLIST = new Set(['拟收购界面财联社','拟收购民族出版社','教科书发行','图书发行','杭州日报','参股神州龙芯（CPU）','参股CPU','一汽配套','索具龙头','深海系泊','炭黑龙头','炭黑涨价','高端黄酒','黄酒主业','针织服装','鸭业全产业链','羽绒出口','贴牌加工','服装贴牌','家电复材','模切业务','导热凝胶','电容配件','铝板带','锡锑铟','铁路扣件合同','矿业整合','硅砂矿','矿山服务','盐湖提锂','玉米种业','安赛蜜','精细化工','食品饲料添加剂','高纯四氯化硅','功能性硅烷','日用陶瓷','日用陶瓷出口','纺织主业','纺织印染','绿色低碳','绿色印染','造纸化学品','聚酯薄膜','膜分离','航空零部件','精密制造','高端部件','易开盖','烟标印刷','热电联产','特种电缆','电线电缆','电力服务','电力水电','生态水利','生活用纸','客户资源','客户拓展','订单充足','订单增长','产能扩张','产能满产','大兆瓦装备','大尺寸拓展','多元化布局','行业龙头','华字辈','兰亭','哪吒重整','安哥拉电解铝','客车销量','导电炭黑','岩土固化','岩土固化剂','环卫自动驾驶','环卫装备','海南自贸港','游船票务','溢价转让','协议转让','苹果供应链','视听大数据','视听安全','媒体内容安全监测']);
+// 3) 正则家族兜底（v4.9）: 词典未命中时泛化归一
 const TOPIC_FAMILIES = [
   [/央企|中国电子|中国电科|中船|航天科工|兵器|核工业/, '央企改革'],
   [/国资|国企|国有/, '国企改革'],
   [/拟收购|收购|并购|资产重组|重组|控股变更|控股股东变更|实控人变更|实际控制人变更|控制权变更|借壳|要约/, '并购重组'],
 ];
-const MA_TOUCH = /收购|并购|重组|借壳|要约/; // 并购家族: 长串(≥7字)几乎必带具体公司名/标的（"拟收购界面财联社"）→ 专属诱因
+const MA_TOUCH = /收购|并购|重组|借壳|要约/; // 并购家族: 长串(≥7字)几乎必带具体公司名 → 专属诱因
 const TOPIC_NOISE_RE = /拟|签署|签订|终止|解除|收到|完成|中标|竞得|摘牌|摘得|获批|获得|通过|回复|问询|立案|处罚|警示|监管|增持|减持|回购|质押|解禁|分红|派息|转增|重整|破产|清算|预盈|预亏|预增|预减|更名|改名|退市|戴帽|摘帽|ST|举牌|定增|配股|增发|发行|变更|设立|募资/;
-const MIN_TOPIC_STOCKS = 2;
+const MIN_TOPIC_STOCKS_GLOBAL = 2; // 全局孤点阈值: 覆盖 <2 只个股的题材=噪声（v4.9.1 由「当日阈值」升级为「全局孤点剔除」）
 
 function normalizeTopicTag(t) {
-  for (const [re, std] of TOPIC_FAMILIES) {
+  if (TOPIC_BLACKLIST.has(t)) return null;              // 精确黑名单优先（原型口径）
+  if (Object.prototype.hasOwnProperty.call(TOPIC_CANON, t)) return TOPIC_CANON[t]; // 精确词典
+  for (const [re, std] of TOPIC_FAMILIES) {             // 正则家族兜底（泛化新变体）
     if (re.test(t)) {
       if (std === '并购重组' && MA_TOUCH.test(t) && t.length >= 7) return null; // 带专名的专属串
       return std;
     }
   }
-  if (TOPIC_NOISE_RE.test(t)) return null;
-  return t; // 词典未命中且无事件动词 → 保留原词（真题材标签）
+  if (TOPIC_NOISE_RE.test(t)) return null;              // 动词黑名单兜底（新事件词）
+  return t;                                             // 原样保留
 }
-function buildTopics(hot) {
+// 全局孤点剔除（原型 fit 等价）: 扫全部 hot 归一后统计题材覆盖个股数, ≥minGlobal 才有效
+function computeValidThemes(hotLists) {
+  const cover = new Map();
+  hotLists.forEach(hot => (hot || []).forEach(h => {
+    const tokens = [...new Set((h.reason || '').split(/[+＋]/).map(w => w.trim()).filter(Boolean))];
+    tokens.map(normalizeTopicTag).filter(Boolean).forEach(t => {
+      if (!cover.has(t)) cover.set(t, new Set());
+      cover.get(t).add(h.code);
+    });
+  }));
+  const valid = new Set();
+  cover.forEach((codes, t) => { if (codes.size >= MIN_TOPIC_STOCKS_GLOBAL) valid.add(t); });
+  return valid;
+}
+// buildTopics: validThemes 传入=全局孤点口径（当日不限票数）; 不传=当日 ≥2 兜底
+function buildTopics(hot, validThemes) {
   const vote = new Map(); // 标准题材 → Set(个股 code)
   hot.forEach(h => {
     const tokens = [...new Set((h.reason || '').split(/[+＋]/).map(w => w.trim()).filter(Boolean))];
@@ -359,11 +394,26 @@ function buildTopics(hot) {
     stds.forEach(t => { if (!vote.has(t)) vote.set(t, new Set()); vote.get(t).add(h.code); });
   });
   const list = [...vote.entries()]
-    .filter(([, codes]) => codes.size >= MIN_TOPIC_STOCKS)
+    .filter(([tag, codes]) => validThemes ? validThemes.has(tag) : codes.size >= MIN_TOPIC_STOCKS_GLOBAL)
     .sort((a, b) => b[1].size - a[1].size)
     .slice(0, 15)
     .map(([tag, codes]) => ({ tag, count: codes.size, codes: [...codes] }));
   return { list, kinds: vote.size };
+}
+// 全档 topics 统一口径重算（纯内存, 与 recalcRanks 同模式）: emotion.top_topic/topic_conc/summary.topic_kinds 同步
+function refreshAllTopics(D) {
+  const validAll = computeValidThemes(D.all_days.map(d => d.hot || []));
+  D.all_days.forEach(d => {
+    if (!d.hot) return;
+    const tp = buildTopics(d.hot, validAll);
+    d.topics = tp.list;
+    if (d.summary) d.summary.topic_kinds = tp.kinds;
+    if (d.emotion) {
+      d.emotion.topic_conc = r1(tp.list.length ? tp.list[0].count / ((d.hot || []).length || 1) * 100 : 0);
+      d.emotion.top_topic = tp.list.length ? tp.list[0].tag : '—';
+    }
+  });
+  return validAll;
 }
 
 // ── day 组装（v4.5: +连板梯队分布/炸板金额/两融）──
@@ -482,10 +532,21 @@ function buildDay(date, lhbRaw, hotRaw, industry, indexes, pools, amountYi, amou
 }
 
 // ── 全档分位重算（pct_rank = rank/(n-1)*100）──
+// v4.9.1: 分位仅用「无补位因子」的真实天数计算——中性 50 天参与分位会拉平分布、失真历史可比性;
+// 补位日 pct_rank 置 null（前端显示 —）。开关 meta.dataQuality.pctRankRealOnly=true。
 function recalcRanks(days) {
-  const rank = (vals, i) => { const s = [...vals].sort((a, b) => a - b); return s.indexOf(vals[i]) / Math.max(s.length - 1, 1) * 100; };
-  const vs = days.map(d => d.emotion.value), ns = days.map(d => d.emotion.net_total_yi);
-  days.forEach((d, i) => { d.emotion.pct_rank = r1(rank(vs, i)); d.emotion.net_pct_rank = r1(rank(ns, i)); });
+  const rank = (vals, v) => { const s = [...vals].sort((a, b) => a - b); return s.indexOf(v) / Math.max(s.length - 1, 1) * 100; };
+  const realDays = days.filter(d => d.emotion && !((d.summary && d.summary._missing) || []).length);
+  const vs = realDays.map(d => d.emotion.value), ns = realDays.map(d => d.emotion.net_total_yi);
+  days.forEach(d => {
+    if (!d.emotion) return;
+    const miss = ((d.summary && d.summary._missing) || []).length;
+    if (miss) { d.emotion.pct_rank = null; d.emotion.net_pct_rank = null; }
+    else {
+      d.emotion.pct_rank = r1(rank(vs, d.emotion.value));
+      d.emotion.net_pct_rank = r1(rank(ns, d.emotion.net_total_yi));
+    }
+  });
 }
 
 // ── stocks 追加（close 直接用榜单收盘价, 零额外请求）──
@@ -547,17 +608,27 @@ async function backfill() {
       '→ 情绪', day.emotion.value);
     await sleep(400);
   }
+  refreshAllTopics(D); // v4.9.1: 全档 topics 统一口径（原型 ThemeDenoiser.fit 等价）
   recalcRanks(D.all_days);
   D.meta = D.meta || {};
   D.meta.dataQuality = Object.assign({}, D.meta.dataQuality, {
-    formulaVersion: 'v4.9 七因子（s_net20/s_pos10/s_brd20/s_hot10/s_zdt15/s_zbl10/s_amt15）+ yzt/dt_band/hs/lb_dist/zb_amt/rzrq + 题材归一(词典+个股数+黑名单+阈值≥2) · topics 全档重算',
-    formulaNote: 's_zdt=(涨停+2)/(涨停+跌停+4)*100; s_zbl=100-炸板率*2; s_amt=两市额/前20日均额*50; 东财池保留约3周, 更早日 s_zdt/s_zbl 中性50补位（summary._missing 标记）; yzt_chg=同花顺883994昨日涨停指数当日涨跌幅（打板赚钱效应）; dt_band=断板家数（相邻两日池齐全才可算）; hs_lb3_count=昨日连板≥3高位股家数, hs_dt_count/hs_dt_fund/hs_dt_amt=高位股今日跌停数/封单合计(亿)/成交额合计(亿); lb_dist=连板梯队分布{板级:家数}(≥2板); zb_amt=炸板股成交额合计(亿); rzrq=两融{jme:融资净买入(亿),ye:融资余额(亿)}（T+1 披露, 最新一日可能缺, 重跑 backfill 即补）; topics=题材词典归一+个股数聚合（一票一题材一票）+专属诱因黑名单+跨≥2只个股阈值, codes=该题材成员股代码表（前端下钻直用）',
-    formulaChangeDate: '2026-09-27',
+    formulaVersion: 'v4.9.1 七因子（s_net20/s_pos10/s_brd20/s_hot10/s_zdt15/s_zbl10/s_amt15）+ yzt/dt_band/hs/lb_dist/zb_amt/rzrq + 题材归一(词典+个股数+黑名单+全局孤点≥2) · topics 全档重算 · pctRankRealOnly',
+    formulaNote: 's_zdt=(涨停+2)/(涨停+跌停+4)*100; s_zbl=100-炸板率*2; s_amt=两市额/前20日均额*50; 东财池保留约3周, 更早日 s_zdt/s_zbl 中性50补位（summary._missing 标记）; yzt_chg=同花顺883994昨日涨停指数当日涨跌幅（打板赚钱效应）; dt_band=断板家数（相邻两日池齐全才可算）; hs_lb3_count=昨日连板≥3高位股家数, hs_dt_count/hs_dt_fund/hs_dt_amt=高位股今日跌停数/封单合计(亿)/成交额合计(亿); lb_dist=连板梯队分布{板级:家数}(≥2板); zb_amt=炸板股成交额合计(亿); rzrq=两融{jme:融资净买入(亿),ye:融资余额(亿)}（T+1 披露, 最新一日可能缺, 重跑 backfill 即补）; topics=题材词典归一+个股数聚合（一票一题材一票）+精确/动词黑名单+全局孤点剔除（全存档覆盖<2只个股的题材=噪声）, codes=该题材成员股代码表（前端下钻直用）; pct_rank 仅用无补位真实天数计算, 补位日 null',
+    formulaChangeDate: '2026-09-28',
+    pctRankRealOnly: true,
     backfilledAt: new Date().toISOString()
   });
   fs.copyFileSync(DATA_FILE, path.join(__dirname, 'data.backup-pre-v45.json'));
   fs.writeFileSync(DATA_FILE, JSON.stringify(D));
   console.log('\n回填完成: 真实池 ' + filled + ' 天 · 缺池 ' + missPool + '（中性补位） · 缺额 ' + missAmt + ' · 涨停成员 ' + hasCodes + ' 天 · 高位亏钱效应 ' + hasHs + ' 天');
+  // v4.9.1: 健康自检（与主流程同口径, 入 meta 供前端 S6 复核/告警）
+  {
+    const missDays = D.all_days.filter(d => ((d.summary && d.summary._missing) || []).length).length;
+    const issues = [];
+    if (missDays > D.all_days.length * 0.4) issues.push('补位因子天数占比 >40%（东财池保留深度限制, 历史可比性打折）');
+    D.meta.dataQuality.health = { checkedAt: new Date().toISOString(), totalDays: D.all_days.length, missingDays: missDays, issues };
+    console.log('健康自检: ' + (issues.length ? '⚠ ' + issues.join(' ; ') : '✓ 无异常') + `（补位 ${missDays}/${D.all_days.length} 天）`);
+  }
   console.log('备份: data.backup-pre-v45.json · 存档 ' + D.all_days.length + ' 天已重算');
   console.log('重建 dist…');
   execSync('node build.js', { cwd: __dirname, stdio: 'inherit' });
@@ -668,6 +739,7 @@ async function backfill() {
     D.all_days.push(day);
   }
   D.all_days.sort((a, b) => a.trade_date < b.trade_date ? -1 : 1);
+  refreshAllTopics(D); // v4.9.1: 全档 topics 统一「全局孤点剔除」口径（含当日, 新旧不混图）
   recalcRanks(D.all_days);
   appendStocks(D, day);
   D.board_rank = D.board_rank || {};
@@ -675,11 +747,23 @@ async function backfill() {
   D.meta = D.meta || {};
   D.meta.holidays = [...new Set([...(D.meta.holidays || [])])].sort();
   D.meta.dataQuality = Object.assign({}, D.meta.dataQuality, {
-    dailyPipe: 'fetch-daily.js 自动管道 v4.5（东财龙虎榜+getharden+881xxx日K+腾讯指数+涨跌停炸板池(含封单/梯队/炸板额)+两市额+883994昨涨停+高位亏钱效应+两融）',
-    dailyPipeNote: 'pct_rank/net_pct_rank 为存档期内分位 rank/(n-1)，每次追加全档重算',
-    formulaVersion: 'v4.9 七因子（s_net20/s_pos10/s_brd20/s_hot10/s_zdt15/s_zbl10/s_amt15）+ yzt/dt_band/hs/lb_dist/zb_amt/rzrq + 题材归一(词典+个股数+黑名单+阈值≥2)',
+    dailyPipe: 'fetch-daily.js 自动管道 v4.9（东财龙虎榜+getharden+881xxx日K+腾讯指数+涨跌停炸板池(含封单/梯队/炸板额)+两市额+883994昨涨停+高位亏钱效应+两融+题材词典归一/全局孤点剔除）',
+    dailyPipeNote: 'pct_rank/net_pct_rank 为「无补位真实天数」内分位（v4.9.1 起补位日置 null）; topics 每次追加全档统一重算',
+    formulaVersion: 'v4.9.1 七因子（s_net20/s_pos10/s_brd20/s_hot10/s_zdt15/s_zbl10/s_amt15）+ yzt/dt_band/hs/lb_dist/zb_amt/rzrq + 题材归一(词典+个股数+黑名单+全局孤点≥2) + pctRankRealOnly',
+    pctRankRealOnly: true,
     dailyPipeLastRun: new Date().toISOString()
   });
+  // ── v4.9.1 管道自判健康度（S6 思想移植: 跑完自检, 异常显式输出并入 meta 供前端复核/告警）──
+  {
+    const missDays = D.all_days.filter(d => ((d.summary && d.summary._missing) || []).length).length;
+    const issues = [];
+    if (missDays > D.all_days.length * 0.4) issues.push('补位因子天数占比 >40%（东财池保留深度限制, 历史可比性打折）');
+    if (day.summary.zt_count == null) issues.push('当日涨跌停池缺失（s_zdt/s_zbl 中性补位）');
+    if (day.summary.yzt_chg == null) issues.push('当日昨涨停效应缺失（883994 时序）');
+    const health = { checkedAt: new Date().toISOString(), totalDays: D.all_days.length, missingDays: missDays, issues };
+    D.meta.dataQuality.health = health;
+    console.log('\n健康自检: ' + (issues.length ? '⚠ ' + issues.join(' ; ') : '✓ 无异常') + `（补位 ${missDays}/${D.all_days.length} 天）`);
+  }
 
   // ── 校验: 新日情绪与其 KPI 合理性 ──
   console.log('\n新交易日组装完成:');

@@ -689,8 +689,8 @@ window.__v43dbg = { divergence, topicStrength }; // 测试钩子（只读）
   const prev=DAYS[DAYS.length-2]?.emotion||{};
   const arrow=(a,b)=>a==null||b==null?'':(a>b?' ▲':(a<b?' ▼':' ▶'));
   $id('emo-kpis').innerHTML=`
-  <div class="kpi"><div class="lab">综合情绪（当前）</div><div class="val num" style="font-size:26px;color:${e.value>=60?UP:e.value<=40?DOWN:'#d7dee9'}">${e.value}${arrow(e.value,prev.value)}</div><div class="sub">历史分位 ${e.pct_rank}%${(()=>{const m=((CUR.summary||{})._missing)||[];let n=0;m.forEach(x=>{if(x==='pools')n+=2;else n+=1;});return n?` · <span style="color:#e0a34f;cursor:help" title="补位因子: ${(m.join('、')||'—')}\n数据源缺失时该因子以中性值 50 参与加权, 今日可信度打折扣">⚠ ${n}/7 因子补位</span>`:'';})()}</div></div>
-  <div class="kpi k-gold"><div class="lab">龙虎榜净买分</div><div class="val num gold">${e.s_net}${arrow(e.s_net,prev.s_net)}</div><div class="sub">净买 ¥${e.net_total_yi}亿 · 分位 ${e.net_pct_rank}%</div></div>
+  <div class="kpi"><div class="lab">综合情绪（当前）</div><div class="val num" style="font-size:26px;color:${e.value>=60?UP:e.value<=40?DOWN:'#d7dee9'}">${e.value}${arrow(e.value,prev.value)}</div><div class="sub">历史分位 ${e.pct_rank??'—'}%${(()=>{const m=((CUR.summary||{})._missing)||[];let n=0;m.forEach(x=>{if(x==='pools')n+=2;else n+=1;});return n?` · <span style="color:#e0a34f;cursor:help" title="补位因子: ${(m.join('、')||'—')}\n数据源缺失时该因子以中性值 50 参与加权, 今日可信度打折扣">⚠ ${n}/7 因子补位</span>`:'';})()}</div></div>
+  <div class="kpi k-gold"><div class="lab">龙虎榜净买分</div><div class="val num gold">${e.s_net}${arrow(e.s_net,prev.s_net)}</div><div class="sub">净买 ¥${e.net_total_yi}亿 · 分位 ${e.net_pct_rank??'—'}%</div></div>
   <div class="kpi"><div class="lab">净买家数比</div><div class="val num">${e.s_pos}%${arrow(e.s_pos,prev.s_pos)}</div><div class="sub">榜上正收益占比</div></div>
   <div class="kpi"><div class="lab">行业广度</div><div class="val num">${e.s_brd}%${arrow(e.s_brd,prev.s_brd)}</div><div class="sub">上涨板块占比</div></div>
   <div class="kpi"><div class="lab">题材热度</div><div class="val num">${e.s_hot}${arrow(e.s_hot,prev.s_hot)}</div><div class="sub">强势股 ${e.hot_count} 只 · 集中度 ${e.topic_conc}%</div></div>
