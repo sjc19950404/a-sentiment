@@ -444,9 +444,11 @@ function buildDay(date, lhbRaw, hotRaw, industry, indexes, pools, amountYi, amou
   const tp = buildTopics(hot);
   const topics = tp.list;
 
-  const net_total_yi = r2(lhb.reduce((a, l) => a + l.net_buy_wan, 0) / 1e4);
-  const net_pos = lhb.filter(l => l.net_buy_wan > 0).length;
-  const net_neg = lhb.filter(l => l.net_buy_wan < 0).length;
+  // v4.9.3 净额口径修正: 按股去重求和（lhb_aggr 每股取绝对值最大榜单为代表）。
+  // 旧口径按行求和会把多上榜原因股（不同榜单席位不同）重复计入——2026-09-28 行求和 -1.17 亿 vs 按股 -0.61 亿。
+  const net_total_yi = r2(lhb_aggr.reduce((a, l) => a + (l.net_buy_wan || 0), 0) / 1e4);
+  const net_pos = lhb_aggr.filter(l => (l.net_buy_wan || 0) > 0).length;
+  const net_neg = lhb_aggr.filter(l => (l.net_buy_wan || 0) < 0).length;
   const ind_up = industry.filter(i => i.change_pct > 0).length;
   const ind_down = industry.filter(i => i.change_pct < 0).length;
 
@@ -507,7 +509,9 @@ function buildDay(date, lhbRaw, hotRaw, industry, indexes, pools, amountYi, amou
   const value = r1((s_net * 20 + s_pos * 10 + up_ratio * 20 + s_hot * 10 + s_zdt * 15 + s_zbl * 10 + s_amt * 15) / 100);
 
   const summary = {
-    lhb_count: lhb.length, lhb_stocks: lhb_aggr.length, net_total_yi, net_pos, net_neg,
+    lhb_count: lhb.length, lhb_stocks: lhb_aggr.length,
+    lhb_stocks_hs: lhb_aggr.filter(l => !/^92|^bj/.test(l.code)).length,
+    net_total_yi, net_pos, net_neg,
     hot_count: hot.length, topic_kinds: tp.kinds,
     ind_count: industry.length, ind_up, ind_down, top_industry: null, bottom_industry: null,
     zt_count: zt, dt_count: dt, zb_count: zb, zbl_pct,
@@ -612,7 +616,7 @@ async function backfill() {
   recalcRanks(D.all_days);
   D.meta = D.meta || {};
   D.meta.dataQuality = Object.assign({}, D.meta.dataQuality, {
-    formulaVersion: 'v4.9.1 七因子（s_net20/s_pos10/s_brd20/s_hot10/s_zdt15/s_zbl10/s_amt15）+ yzt/dt_band/hs/lb_dist/zb_amt/rzrq + 题材归一(词典+个股数+黑名单+全局孤点≥2) · topics 全档重算 · pctRankRealOnly',
+    formulaVersion: 'v4.9.3 七因子（s_net20/s_pos10/s_brd20/s_hot10/s_zdt15/s_zbl10/s_amt15）+ yzt/dt_band/hs/lb_dist/zb_amt/rzrq + 题材归一(词典+个股数+黑名单+全局孤点≥2) + pctRankRealOnly + lhb净额按股去重',
     formulaNote: 's_zdt=(涨停+2)/(涨停+跌停+4)*100; s_zbl=100-炸板率*2; s_amt=两市额/前20日均额*50; 东财池保留约3周, 更早日 s_zdt/s_zbl 中性50补位（summary._missing 标记）; yzt_chg=同花顺883994昨日涨停指数当日涨跌幅（打板赚钱效应）; dt_band=断板家数（相邻两日池齐全才可算）; hs_lb3_count=昨日连板≥3高位股家数, hs_dt_count/hs_dt_fund/hs_dt_amt=高位股今日跌停数/封单合计(亿)/成交额合计(亿); lb_dist=连板梯队分布{板级:家数}(≥2板); zb_amt=炸板股成交额合计(亿); rzrq=两融{jme:融资净买入(亿),ye:融资余额(亿)}（T+1 披露, 最新一日可能缺, 重跑 backfill 即补）; topics=题材词典归一+个股数聚合（一票一题材一票）+精确/动词黑名单+全局孤点剔除（全存档覆盖<2只个股的题材=噪声）, codes=该题材成员股代码表（前端下钻直用）; pct_rank 仅用无补位真实天数计算, 补位日 null',
     formulaChangeDate: '2026-09-28',
     pctRankRealOnly: true,
@@ -750,7 +754,7 @@ async function backfill() {
   D.meta.dataQuality = Object.assign({}, D.meta.dataQuality, {
     dailyPipe: 'fetch-daily.js 自动管道 v4.9（东财龙虎榜+getharden+881xxx日K+腾讯指数+涨跌停炸板池(含封单/梯队/炸板额)+两市额+883994昨涨停+高位亏钱效应+两融+题材词典归一/全局孤点剔除）',
     dailyPipeNote: 'pct_rank/net_pct_rank 为「无补位真实天数」内分位（v4.9.1 起补位日置 null）; topics 每次追加全档统一重算',
-    formulaVersion: 'v4.9.1 七因子（s_net20/s_pos10/s_brd20/s_hot10/s_zdt15/s_zbl10/s_amt15）+ yzt/dt_band/hs/lb_dist/zb_amt/rzrq + 题材归一(词典+个股数+黑名单+全局孤点≥2) + pctRankRealOnly',
+    formulaVersion: 'v4.9.3 七因子（s_net20/s_pos10/s_brd20/s_hot10/s_zdt15/s_zbl10/s_amt15）+ yzt/dt_band/hs/lb_dist/zb_amt/rzrq + 题材归一(词典+个股数+黑名单+全局孤点≥2) + pctRankRealOnly + lhb净额按股去重',
     pctRankRealOnly: true,
     dailyPipeLastRun: new Date().toISOString()
   });

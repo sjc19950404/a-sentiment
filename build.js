@@ -68,7 +68,7 @@ const DAYS = D.all_days.slice().sort((a,b)=>a.trade_date<b.trade_date?-1:1);`;
 // ── patch 8: 净买 TOP 排名 desc 说明（区分聚合口径）──
 const DESC_OLD = `  $id('lhb-desc').textContent=\`净买合计 ¥\${CUR.summary.net_total_yi.toFixed(2)}亿 · 正 \${CUR.summary.net_pos} 条 / 负 \${CUR.summary.net_neg} 条\`;`;
 const DESC_NEW = `  const agg = CUR.lhb_aggr && CUR.lhb_aggr.length;
-  $id('lhb-desc').textContent=\`净买合计 ¥\${CUR.summary.net_total_yi.toFixed(2)}亿 · \${agg ? CUR.lhb_aggr.length + ' 只个股（同股多榜已聚合去重）' : CUR.summary.net_pos + ' 条净买 / ' + CUR.summary.net_neg + ' 条净卖'}\`;`;
+  $id('lhb-desc').textContent=\`净买合计 ¥\${CUR.summary.net_total_yi.toFixed(2)}亿（按股去重, 多榜股取绝对值最大榜单为代表） · \${agg ? CUR.lhb_aggr.length + ' 只个股（同股多榜已聚合去重）' : CUR.summary.net_pos + ' 家净买 / ' + CUR.summary.net_neg + ' 家净卖'}\`;`;
 
 const PATCHES = [
   ['/*__DATA__*/', '<script id="report-data" type="application/json">__REPORT_DATA__</' + 'script>'],

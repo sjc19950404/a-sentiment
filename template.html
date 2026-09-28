@@ -623,8 +623,8 @@ function kpiHTML(day){
   const rzStr = s.rzrq ? `<div class="kpi"><div class="lab">💳 两融杠杆</div><div class="val num ${cls(s.rzrq.jme)}" style="font-size:19px">${(s.rzrq.jme>0?'+':'')}${s.rzrq.jme}<small style="font-size:12px;color:var(--dim)"> 亿</small></div><div class="sub">融资净买入（T+1披露）· 余额 ¥${(s.rzrq.ye/10000).toFixed(2)} 万亿</div></div>` : '';
   return `
   <div class="kpi"><div class="lab">🌡️ 情绪指数</div><div class="val num" style="color:${e.value>=60?UP:e.value<=40?DOWN:'#d7dee9'}">${e.value??'—'}</div><div class="sub">历史分位 ${e.pct_rank??'—'}%</div></div>
-  <div class="kpi k-gold"><div class="lab">💰 龙虎榜净买入</div><div class="val num gold">${(s.net_total_yi>0?'+':'')}¥${s.net_total_yi?.toFixed(2)}亿</div><div class="sub">净买 ${s.net_pos} / 净卖 ${s.net_neg}</div></div>
-  <div class="kpi k-up"><div class="lab">🐉 上榜</div><div class="val num">${s.lhb_stocks}<small style="font-size:12px;color:var(--dim)"> 只</small></div><div class="sub">${s.lhb_count} 条记录</div></div>
+  <div class="kpi k-gold"><div class="lab">💰 龙虎榜净买入</div><div class="val num gold">${(s.net_total_yi>0?'+':'')}¥${s.net_total_yi?.toFixed(2)}亿</div><div class="sub">净买 ${s.net_pos} 家 / 净卖 ${s.net_neg} 家 · 按股去重</div></div>
+  <div class="kpi k-up"><div class="lab">🐉 上榜</div><div class="val num">${s.lhb_stocks}<small style="font-size:12px;color:var(--dim)"> 只</small></div><div class="sub">${s.lhb_count} 条记录 · 沪深 ${s.lhb_stocks_hs??s.lhb_stocks} 只</div></div>
   <div class="kpi k-up"><div class="lab">🔥 最热题材</div><div class="val gold" style="font-size:18px">${ti.tag}</div><div class="sub">${ti.count} 只 · 强势股 ${s.hot_count} 只</div></div>
   ${zdtStr}
   <div class="kpi" id="kpi-ind"><div class="lab">📈 领涨行业</div><div class="val up" style="font-size:17px">${tind.name} ${pct(tind.change_pct)}</div><div class="sub">涨/跌板块 ${s.ind_up}/${s.ind_down}</div></div>

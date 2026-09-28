@@ -99,6 +99,20 @@ sentiment-dashboard/
 - **数据快照归档**：每日数据更新后自动上传 `data-YYYY-MM-DD.json` 到 GitHub Release「data-archive」（滚动累积，仓库误删可按日期恢复）
 - 天然镜像备忘：`cdn.jsdelivr.net/gh/sjc19950404/a-sentiment@main/data.json` 可直接引用（jsDelivr 对 GitHub 仓库文件的 CDN 镜像）
 
+## v4.9.3 龙虎榜净额口径修正：按股去重（2026-09-28）
+
+### 问题（外部核验发现）
+龙虎榜逐条核验（对照东财公开榜单 48 只）发现系统口径偏差的**真正根源**：`net_total_yi/net_pos/net_neg` 按**行**（股票×上榜原因）求和与计数——同一只股票上多个榜时净额被重复计入（如巨力索具两条榜单净额分别为 7634.9 万/3655.2 万），9/28 行求和 -1.17 亿 vs 按股去重 -0.61 亿；净买 30/净卖 37=67「家」实为 67 条记录。`lhb_aggr` 聚合层虽已按股去重（每股取绝对值最大榜单为代表），但汇总指标没有用它。
+
+### 修复
+- `net_total_yi` 改为 `lhb_aggr` 按股求和；`net_pos/net_neg` 按股计数（9/28: 24 家/31 家，合计 55 只）
+- 新增 `summary.lhb_stocks_hs`（沪深口径，剔北交所 92x）——9/28 = 50 只，与外部通用统计口径可比（媒体报道 48 只为沪深口径，差异或含科创板口径出入）
+- `lhb_count` 保持=原始行数（前端已标注「N 条记录」）；KPI 卡标注「按股去重 · 沪深 N 只」；lhb-desc 标注聚合口径
+- **全档 31 天联动重算**：s_net/value/net_pct_rank/pct_rank（tools/apply-lhb-net-fix.py，复刻 JS round），`_rebuild` 追加 `lhb_net` 标记，formulaVersion v4.9.3；修复前备份 data.backup-pre-lhbfix.json
+- 9/28 情绪 35→35.1（pct_rank 3.3% 不变），历史天净额修正幅度 0.1~6.6 亿不等
+- 探针回归：shoot-v49 16/16 + v43 35/35 + topic 19/19
+- 教训：聚合指标必须从去重层计算，禁止从原始行层直接求和——「条数」与「家数」是两个量纲
+
 ## v4.9.2 pools 历史断层修复（2026-09-28）
 
 ### 问题：情绪公式历史断层
