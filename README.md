@@ -99,7 +99,25 @@ sentiment-dashboard/
 - **数据快照归档**：每日数据更新后自动上传 `data-YYYY-MM-DD.json` 到 GitHub Release「data-archive」（滚动累积，仓库误删可按日期恢复）
 - 天然镜像备忘：`cdn.jsdelivr.net/gh/sjc19950404/a-sentiment@main/data.json` 可直接引用（jsDelivr 对 GitHub 仓库文件的 CDN 镜像）
 
+## v4.9.2 pools 历史断层修复（2026-09-28）
+
+### 问题：情绪公式历史断层
+东财涨跌停/炸板池接口只保留约 3 周——存档首批 15 天（2026-08-14 ~ 09-03）的 `zt_count/dt_count/zb_count` 全部缺失，`s_zdt/s_zbl` 按中性 50 补位，情绪值与 9/4 之后真实口径不可比（15/31 天断层）；9/4 还有一笔池接口空返回坏数据（zt=0 但 dt=9，自相矛盾）入库。
+
+### 修复：全市场K线库重建 + 线性校准（tools/apply-rebuild-pools.py）
+- **两组原始因子重建**：涨停家数（s_zdt 组）= 收盘价达涨停价（前收×限幅，整数分 round half up）；炸板家数（s_zbl 组）= 盘中最高价触涨停价但收盘未封；跌停家数对称。ST 5% / 科创 688·689 20% / 创业板 30x 20% / 其余 10%；上市前 5 根 bar 跳过（无涨跌幅限制）；涨幅超限幅+5% 视为除权虚高整票跳过
+- **校准**：用 15 个有真实池数据的日子做线性回归（重建值→真实值），zt r=0.987 / dt r=0.976 / zb r=0.72——炸板相关性偏弱是口径差（东财炸板池=封板后打开，日K 只能重建「摸板未封」超集）
+- **效果对比（情绪值传导）**：校准重建 s_zdt 平均误差 0.47 分 / s_zbl 0.93 分，vs 中性 50 补位 4.8 分 / 1.75 分——s_zdt 好 90%、s_zbl 好 47%，且保留极端信号（8/19 跌停潮 dt=114 → s_zdt 24.7 恐慌日）
+- **写入口径**：修复日 `summary._rebuild=['pools']` 标记（_missing 移除 pools）、`s_zdt_raw/s_zbl_raw` 留档校准前重建原始值、修复前情绪值见 git 历史；dt_band/hs_*/lb_dist/zb_amt 历史段不可重建保持缺失
+- **修复后**：全档 31 天七因子全真实（补位 0 天）、health.missingDays=0、pct_rank 全档有值（9/28 分位 0%→3.3%，31 天口径更准）、formulaVersion v4.9.2
+- 探针适配：S6 补位行断言改为条件一致（0 补位=「全部七因子真实数据」）；本地 16/16 + v43 35/35 + topic 19/19
+
+### 踩坑记录
+- 腾讯 `web.ifzq.gtimg.cn` fqkline 接口在 ~6000 次请求后对本机触发风控（HTTP 501，qt.gtimg 不受影响）——批量拉历史日K 需控频或换源；新浪 `getKLineData` 也在 ~500 次后限流。最终方案用**本地已有的 qfq 分片库 + 比例判定**（零网络）完成
+
 ## v4.9.1 题材降噪原型融合 + 分位仅真实天数 + 管道健康自检（2026-09-28）
+
+
 
 用户交接稿随附可运行原型 `normalize_themes.py`（ThemeDenoiser 类，实测新晋 106→16、退潮 155→8），本版把原型成果全量移植进 fetch-daily.js 管道（原型三文件归档于 `tools/`），formulaVersion 升 v4.9.1：
 
