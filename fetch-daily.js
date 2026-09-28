@@ -53,6 +53,12 @@ async function fetchHot() {
 }
 
 // ── 源2: 东财龙虎榜（分页全量）──
+// v4.8.9: 区分「当日榜单未公布」与「接口故障」——前者抛 LhbNotPublishedError（主流程优雅退出 exit 0），
+// 后者抛普通 Error（真故障，exit 1 触发告警）。根因：强势股接口盘中即有当日数据，龙虎榜要收盘后
+// 约 17:00-18:00 才出，若管道在公布前运行（定时提前抖动 / 手动 dispatch），旧逻辑会 FATAL exit 1。
+class LhbNotPublishedError extends Error {
+  constructor(date) { super('龙虎榜未公布: ' + date); this.name = 'LhbNotPublishedError'; this.date = date; }
+}
 async function fetchLhb(date) {
   const out = []; let page = 1;
   while (page <= 5) {
@@ -60,7 +66,11 @@ async function fetchLhb(date) {
       '&reportName=RPT_DAILYBILLBOARD_DETAILSNEW&columns=ALL&filter=(TRADE_DATE%3D%27' + date + '%27)';
     const r = await fetch(url, { headers: { 'User-Agent': UA, Referer: 'https://data.eastmoney.com/' } });
     const j = await r.json();
-    if (!j.success || !j.result) throw new Error('龙虎榜接口失败: ' + (j.message || 'empty'));
+    // 未公布特征: success=false 且无 result（东财对无数据日期返回 success:false）——仅第 1 页判定
+    if (!j.success || !j.result) {
+      if (page === 1 && !j.result) throw new LhbNotPublishedError(date);
+      throw new Error('龙虎榜接口失败: ' + (j.message || 'empty'));
+    }
     out.push(...j.result.data);
     if (out.length >= j.result.count) break;
     page++; await sleep(300);
@@ -461,7 +471,19 @@ async function backfill() {
 
   // ── 抓取其余源 ──
   console.log('抓取龙虎榜…');
-  const lhbRaw = await fetchLhb(apiDate);
+  let lhbRaw;
+  try {
+    lhbRaw = await fetchLhb(apiDate);
+  } catch (e) {
+    if (e instanceof LhbNotPublishedError) {
+      // 龙虎榜尚未公布（收盘后约 17:00-18:00 才有）——非交易日 or 管道跑得太早。
+      // 优雅退出：exit 0 + 输出「无新交易日」让 workflow 门控判定 updated=false，跳过构建发布不空转。
+      console.log('✓ ' + apiDate + ' 龙虎榜尚未公布（东财收盘后约 17:00-18:00 发布）· 无新交易日，退出');
+      return;
+    }
+    throw e;
+  }
+  if (!lhbRaw.length) { console.log('✓ ' + apiDate + ' 龙虎榜为空 · 无新交易日，退出'); return; }
   console.log('  龙虎榜', lhbRaw.length, '条');
   console.log('抓取行业日K（90 板块 × 当日, 约 12s）…');
   const industry = await fetchBoards(apiDate);
