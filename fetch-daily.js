@@ -212,6 +212,26 @@ async function fetchIdxAmount() {
 }
 
 // ── 源5: 东财涨停/炸板/跌停池（须带 sort; date 支持历史但保留约 3 周）──
+// ── 源6b: 同花顺池备用源（v4.9.4: dataapi limit_up 四池, 保留完整历史; 东财单池失败/口径自相矛盾时补齐）──
+function thsLb(high_days) {
+  if (high_days === '首板') return 1;
+  const m = /(\d+)板/.exec(high_days || '');
+  return m ? parseInt(m[1], 10) : 1;
+}
+async function thsFetchPool(ep, ymd) {
+  const j = await withRetry(async () => {
+    const r = await fetch('https://data.10jqka.com.cn/dataapi/limit_up/' + ep + '?page=1&limit=500&field=199112,10,9001,330324,9002,133971,1968584,3475914,9003,9004&filter=HS,GEM2STAR&order_field=330324&order_type=0&date=' + ymd,
+      { headers: { 'User-Agent': UA, Referer: 'https://data.10jqka.com.cn/datacenterph/limitup/limtupInfo.html' } });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j2 = await r.json();
+    if (j2.status_code !== 0) throw new Error('ths api: ' + j2.status_msg);
+    return j2;
+  }, 2, 600);
+  const info = (j.data && j.data.info) || [];
+  const total = (j.data && j.data.page && j.data.page.total) || info.length;
+  return { total, info };
+}
+
 async function fetchPools(date) {
   const ymd = date.replace(/-/g, '');
   const base = 'ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wz.ztzt&Pageindex=0&pagesize=500';
@@ -246,6 +266,28 @@ async function fetchPools(date) {
       }
     } catch (e) { /* 单池失败保持 null */ }
     await sleep(400);
+  }
+  // v4.9.4: 同花顺备用源补齐——单池 null（瞬断/超保留深度）或口径自相矛盾（zt=0 且 dt>0, 2026-09-04 坏数据教训）时替换
+  const needThs = k => out[k] == null;
+  if (needThs('zt') || needThs('zb') || needThs('dt') || (out.zt === 0 && (out.dt || 0) > 0)) {
+    try {
+      const [tZt, tZb, tDt] = await Promise.all([
+        thsFetchPool('limit_up_pool', ymd), thsFetchPool('open_limit_pool', ymd), thsFetchPool('lower_limit_pool', ymd)
+      ]).catch(() => [null, null, null]);
+      if (tZt && (needThs('zt') || out.zt === 0)) {
+        out.zt = tZt.total;
+        out.zt_codes = tZt.info.map(x => x.code);
+        out.zt_lb = {}; tZt.info.forEach(x => { out.zt_lb[x.code] = thsLb(x.high_days); });
+        out.max_lb = Math.max(...Object.values(out.zt_lb), 1);
+        out.lb2 = Object.values(out.zt_lb).filter(lb => lb >= 2).length;
+      }
+      if (tZb && needThs('zb')) out.zb = tZb.total;
+      if (tDt && (needThs('dt') || out.zt === 0)) {
+        out.dt = tDt.total;
+        out.dt_detail = tDt.info.map(x => ({ c: x.code, fba: x.order_amount || 0, amount: 0, days: 0 })); // 同花顺无成交额字段, amount 置 0
+      }
+      if (tZt || tZb || tDt) { any = true; console.log('  ⚡ 同花顺备用源补齐: zt' + out.zt + '/zb' + out.zb + '/dt' + out.dt); }
+    } catch (e) { /* 备用源也失败保持 null → 主流程补位标记 */ }
   }
   return any ? out : null; // 全空 = 超保留深度
 }
@@ -616,7 +658,7 @@ async function backfill() {
   recalcRanks(D.all_days);
   D.meta = D.meta || {};
   D.meta.dataQuality = Object.assign({}, D.meta.dataQuality, {
-    formulaVersion: 'v4.9.3 七因子（s_net20/s_pos10/s_brd20/s_hot10/s_zdt15/s_zbl10/s_amt15）+ yzt/dt_band/hs/lb_dist/zb_amt/rzrq + 题材归一(词典+个股数+黑名单+全局孤点≥2) + pctRankRealOnly + lhb净额按股去重',
+    formulaVersion: 'v4.9.4 七因子（s_net20/s_pos10/s_brd20/s_hot10/s_zdt15/s_zbl10/s_amt15）+ yzt/dt_band/hs/lb_dist/zb_amt/rzrq + 题材归一(词典+个股数+黑名单+全局孤点≥2) + pctRankRealOnly + lhb净额按股去重 + 池同花顺备用源',
     formulaNote: 's_zdt=(涨停+2)/(涨停+跌停+4)*100; s_zbl=100-炸板率*2; s_amt=两市额/前20日均额*50; 东财池保留约3周, 更早日 s_zdt/s_zbl 中性50补位（summary._missing 标记）; yzt_chg=同花顺883994昨日涨停指数当日涨跌幅（打板赚钱效应）; dt_band=断板家数（相邻两日池齐全才可算）; hs_lb3_count=昨日连板≥3高位股家数, hs_dt_count/hs_dt_fund/hs_dt_amt=高位股今日跌停数/封单合计(亿)/成交额合计(亿); lb_dist=连板梯队分布{板级:家数}(≥2板); zb_amt=炸板股成交额合计(亿); rzrq=两融{jme:融资净买入(亿),ye:融资余额(亿)}（T+1 披露, 最新一日可能缺, 重跑 backfill 即补）; topics=题材词典归一+个股数聚合（一票一题材一票）+精确/动词黑名单+全局孤点剔除（全存档覆盖<2只个股的题材=噪声）, codes=该题材成员股代码表（前端下钻直用）; pct_rank 仅用无补位真实天数计算, 补位日 null',
     formulaChangeDate: '2026-09-28',
     pctRankRealOnly: true,
@@ -754,7 +796,7 @@ async function backfill() {
   D.meta.dataQuality = Object.assign({}, D.meta.dataQuality, {
     dailyPipe: 'fetch-daily.js 自动管道 v4.9（东财龙虎榜+getharden+881xxx日K+腾讯指数+涨跌停炸板池(含封单/梯队/炸板额)+两市额+883994昨涨停+高位亏钱效应+两融+题材词典归一/全局孤点剔除）',
     dailyPipeNote: 'pct_rank/net_pct_rank 为「无补位真实天数」内分位（v4.9.1 起补位日置 null）; topics 每次追加全档统一重算',
-    formulaVersion: 'v4.9.3 七因子（s_net20/s_pos10/s_brd20/s_hot10/s_zdt15/s_zbl10/s_amt15）+ yzt/dt_band/hs/lb_dist/zb_amt/rzrq + 题材归一(词典+个股数+黑名单+全局孤点≥2) + pctRankRealOnly + lhb净额按股去重',
+    formulaVersion: 'v4.9.4 七因子（s_net20/s_pos10/s_brd20/s_hot10/s_zdt15/s_zbl10/s_amt15）+ yzt/dt_band/hs/lb_dist/zb_amt/rzrq + 题材归一(词典+个股数+黑名单+全局孤点≥2) + pctRankRealOnly + lhb净额按股去重 + 池同花顺备用源',
     pctRankRealOnly: true,
     dailyPipeLastRun: new Date().toISOString()
   });

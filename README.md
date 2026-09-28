@@ -99,7 +99,28 @@ sentiment-dashboard/
 - **数据快照归档**：每日数据更新后自动上传 `data-YYYY-MM-DD.json` 到 GitHub Release「data-archive」（滚动累积，仓库误删可按日期恢复）
 - 天然镜像备忘：`cdn.jsdelivr.net/gh/sjc19950404/a-sentiment@main/data.json` 可直接引用（jsDelivr 对 GitHub 仓库文件的 CDN 镜像）
 
+## v4.9.4 同花顺池真实历史 + 概念结构化归因 + 飞书告警（2026-09-28）
+
+### 池数据升级：校准重建 → 真实历史（tools/apply-thspool-fix.py）
+- **发现同花顺池接口保留完整历史**：`dataapi/limit_up/` 下四池 `limit_up_pool`（涨停）/`open_limit_pool`（炸板）/`lower_limit_pool`（跌停）/`continuous_limit_pool`（连板），date 参数可查任意历史日；连板池字段 high_days（首板/X天Y板）可直接重建连板梯队
+- **口径对照**：与东财真实池 15 个重叠日平均绝对误差 zt 0.5 / dt 0.2 / zb 0.0（几乎同口径）——真实数据完胜 v4.9.2 校准重建（s_zdt 传导误差 0.47 分 → 0）
+- 8/14~9/4 共 16 天写入真实 zt/dt/zb，并恢复 zt_lb/lb_dist/dt_band/hs_lb3_count/hs_dt_count（此前判定「历史段不可重建」）；`_rebuild` 升级 `pools_ths` 标记；s_zdt_raw/s_zbl_raw 删除（真值无需留档）；formulaVersion v4.9.4
+- 极端日恢复例证：8/19 跌停潮 dt=118（重建 114）、8/17 涨停潮 zt=106；9/4 坏数据（zt=0）修正为真实 38/9/48
+- **管道备用源**：fetchPools 东财单池 null/口径自相矛盾（zt=0 且 dt>0）时自动用同花顺补齐（fetch-daily.js 内建，未来不再断层）；zb_amt（炸板封单额）同花顺炸板后清零无法恢复保持缺失
+
+### 概念板块结构化归因（tools/blocktop-fetch.js）
+- 同花顺 `block_top` 接口：每日涨停股按官方概念（885xxx/881xxx）聚合，涨停数≥2 上榜，含成员 codes 与最高连板——**题材榜根治方向的结构化数据源**（当日+历史全可用）
+- 全档 31 天已入库 `summary.concept_top`（TOP10）；9/28 = 一带一路 10 / 绿色电力 6 / 数字经济 6 / 人工智能 6；8/14 = 芯片 20 / 机器人 15 / 5G 14
+- 口径说明：concept_top 基于涨停股官方概念归因；现题材榜基于强势股（含非涨停）诱因串+词典归一——互补维度，后续前端可做双榜对照
+
+### 运维：飞书告警通道
+- daily.yml failure 时在 GitHub Issue 之外推送飞书群机器人；仓库 secret `FEISHU_WEBHOOK` 未配置自动跳过
+
+### 接口挖掘方法
+同花顺页面 404 时从正确入口 `limtupInfo.html`（注意拼写）拉业务 JS（`limtupInfo.*.js`），grep `"*_pool"` 得到全部 endpoint 名：limit_up_pool / open_limit_pool / **lower_limit_pool**（跌停，不是 limit_down）/ continuous_limit_pool
+
 ## v4.9.3 龙虎榜净额口径修正：按股去重（2026-09-28）
+
 
 ### 问题（外部核验发现）
 龙虎榜逐条核验（对照东财公开榜单 48 只）发现系统口径偏差的**真正根源**：`net_total_yi/net_pos/net_neg` 按**行**（股票×上榜原因）求和与计数——同一只股票上多个榜时净额被重复计入（如巨力索具两条榜单净额分别为 7634.9 万/3655.2 万），9/28 行求和 -1.17 亿 vs 按股去重 -0.61 亿；净买 30/净卖 37=67「家」实为 67 条记录。`lhb_aggr` 聚合层虽已按股去重（每股取绝对值最大榜单为代表），但汇总指标没有用它。

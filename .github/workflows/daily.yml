@@ -133,3 +133,16 @@ jobs:
             } else {
               await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title: '⚠️ 情绪系统管道失败告警（自动）', body, labels: ['pipeline-alert'] });
             }
+
+      # ── v4.9.4 飞书告警通道: 仓库 secret FEISHU_WEBHOOK（飞书群自定义机器人 URL）未配置时自动跳过 ──
+      - name: 飞书群告警
+        if: failure()
+        continue-on-error: true
+        run: |
+          if [ -z "${{ secrets.FEISHU_WEBHOOK }}" ]; then
+            echo "FEISHU_WEBHOOK 未配置, 跳过飞书告警"
+          else
+            curl -s -m 15 -X POST "${{ secrets.FEISHU_WEBHOOK }}" \
+              -H "Content-Type: application/json" \
+              -d '{"msg_type":"text","content":{"text":"⚠️ a-sentiment 管道失败\n${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n事件: ${{ github.event_name }} · 时间: $(date -u +%FT%TZ)\n已同步开 GitHub Issue, 请查日志修复"}}'
+          fi
