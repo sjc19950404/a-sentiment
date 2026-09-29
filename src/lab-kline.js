@@ -203,6 +203,76 @@
     </div>`;
   }
 
+  // ── v4.9.9 对比分析：归一化叠加个股 vs 基准（指数走 ifzq 直连(CORS *) / 个股优先本地分片）──
+  const BENCH_IDX = { sh000001: '上证指数', sz399001: '深证成指', sz399006: '创业板指' };
+  function normCode(s) {
+    s = String(s || '').trim().toLowerCase();
+    const m = /^(sh|sz|bj)?(\d{6})$/.exec(s);
+    if (!m) return null;
+    // 注意括号优先级：m[1] || (...) 必须先合并前缀再拼数字，否则带前缀入参会丢数字
+    const mk = m[1] || (m[2][0] === '6' ? 'sh' : (m[2][0] === '0' || m[2][0] === '3') ? 'sz' : 'bj');
+    return mk + m[2];
+  }
+  async function fetchBench(bcode, need) {
+    try {
+      const v = await getShard(bcode);   // 个股优先走本地分片（离线快）
+      if (v.bars && v.bars.length >= Math.min(need, 30)) return { code: bcode, label: v.n || bcode, pts: v.bars.map(b => [b[0], b[2]]) };
+    } catch (e) {}
+    const res = await fetch('https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=' + bcode + ',day,,,' + Math.min(640, need + 40) + ',qfq');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const j = await res.json();
+    const d = j && j.data && j.data[bcode];
+    const arr = (d && (d.qfqday || d.day)) || null;
+    if (!arr || !arr.length) throw new Error('无数据');
+    return { code: bcode, label: BENCH_IDX[bcode] || bcode, pts: arr.map(r => [r[0], parseFloat(r[2])]) };
+  }
+  function cmpHTML(stockBars, bench, win) {
+    const s = stockBars.slice(-win);
+    const bmap = new Map(bench.pts.map(p => [p[0], p[1]]));
+    const pts = [];
+    s.forEach(b => { const bv = bmap.get(b[0]); if (bv != null) pts.push([b[0], b[2], bv]); });
+    if (pts.length < 3) return '<div class="dim" style="padding:8px 0;font-size:12px">基准与个股日期对齐不足（基准可能停牌/无数据），无法对比。</div>';
+    const s0 = pts[0][1], b0 = pts[0][2];
+    const sn = pts.map(p => p[1] / s0 * 100), bn = pts.map(p => p[2] / b0 * 100);
+    const mn = Math.min.apply(null, sn.concat(bn)), mx = Math.max.apply(null, sn.concat(bn));
+    const pad = (mx - mn) * 0.08 || 1; const lo = mn - pad, hi = mx + pad;
+    const W = 800, H = 210, L = 10, R = W - 64, T = 10, B = H - 22;
+    const X = i => L + (R - L) * i / (pts.length - 1);
+    const Y = v => T + (hi - v) / (hi - lo) * (B - T);
+    const path = a => a.map((v, i) => (i ? 'L' : 'M') + X(i).toFixed(1) + ',' + Y(v).toFixed(1)).join('');
+    let grid = '';
+    for (let g = 0; g <= 3; g++) {
+      const yy = T + (B - T) * g / 3, val = hi - (hi - lo) * g / 3;
+      grid += `<line x1="${L}" y1="${yy.toFixed(1)}" x2="${R}" y2="${yy.toFixed(1)}" stroke="#1c2434"/><text x="${R + 6}" y="${(yy + 4).toFixed(1)}" fill="#5a6a80" font-size="10">${val.toFixed(1)}</text>`;
+    }
+    const lblEvery = Math.ceil(pts.length / 6);
+    let labels = '';
+    pts.forEach((p, i) => { if (i % lblEvery === 0 || i === pts.length - 1) labels += `<text x="${X(i).toFixed(0)}" y="${H - 6}" fill="#5a6a80" font-size="10" text-anchor="middle">${p[0].slice(5)}</text>`; });
+    const sRet = (sn[sn.length - 1] / 100 - 1) * 100, bRet = (bn[bn.length - 1] / 100 - 1) * 100, exc = sRet - bRet;
+    let winDays = 0, tot = 0;
+    for (let i = 1; i < pts.length; i++) {
+      const rs = pts[i][1] / pts[i - 1][1] - 1, rb = pts[i][2] / pts[i - 1][2] - 1;
+      if (isFinite(rs) && isFinite(rb)) { tot++; if (rs >= rb) winDays++; }
+    }
+    const c = v => v >= 0 ? '#ff5a5a' : '#2fbf8f';
+    const pc = v => (v >= 0 ? '+' : '') + v.toFixed(2) + '%';
+    const chip = (k, v, col) => `<div style="padding:5px 10px;border-right:1px solid #1c2434;border-bottom:1px solid #1c2434"><div style="font-size:10.5px;color:#5a6a80">${k}</div><div class="num" style="font-size:13px;font-weight:700;${col ? 'color:' + col : ''}">${v}</div></div>`;
+    return `<svg class="km-svg" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="margin-top:8px">
+      ${grid}
+      <path d="${path(bn)}" fill="none" stroke="#8a94a6" stroke-width="1.4" stroke-dasharray="4,3"/>
+      <path d="${path(sn)}" fill="none" stroke="#5b8cff" stroke-width="2"/>
+      ${labels}
+      <text x="${L}" y="10" fill="#5b8cff" font-size="10">■ 个股（起点=100）</text>
+      <text x="${L + 130}" y="10" fill="#8a94a6" font-size="10">--- ${esc(bench.label)}（基准）</text>
+    </svg>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);border:1px solid #1c2434;border-radius:8px;overflow:hidden;font-size:12px;margin-top:6px">
+      ${chip('个股区间涨幅', pc(sRet), c(sRet))}
+      ${chip(esc(bench.label) + '同区间', pc(bRet), c(bRet))}
+      ${chip('相对超额', (exc >= 0 ? '+' : '') + exc.toFixed(2) + ' pt', c(exc))}
+      ${chip('日度跑赢基准', winDays + '/' + tot + ' 天')}
+    </div>`;
+  }
+
   // ── 任意A股K线弹窗 ──
   window._openKline = async function (code, nameHint) {
     let mask = document.getElementById('kmodal-mask');
@@ -222,13 +292,33 @@
       const name = nameHint || v.n || '';
       let cur = 60;
       let qtHtml = null, qtDone = false;
+      let benchCode = 'sh000001', benchP = null, benchBusy = false, benchErrMsg = null, benchCustom = false;
       const note = `<div style="margin-top:10px;font-size:11px;color:var(--faint);line-height:1.7">ℹ 该股存档期内（近 31 个交易日）未上龙虎榜、未进入同花顺强势股，故无档案类内容（上榜历史/题材归因仅覆盖存档个股）。此处提供实时快照 + 本地K线技术统计作为补充；若该股日后上榜，将自动获得完整档案。</div>`;
+      async function loadBench() {
+        benchBusy = true; benchErrMsg = null; render();
+        try { benchP = await fetchBench(benchCode, Math.min(640, cur + 40)); }
+        catch (e) { benchP = null; benchErrMsg = e.message || '拉取失败'; }
+        benchBusy = false; render();
+      }
+      const benchCtl = () => `<div style="display:flex;align-items:center;gap:8px;margin-top:4px;flex-wrap:wrap">
+        <span style="font-size:11.5px;color:#5a6a80">对比基准</span>
+        <select id="km-bench" style="background:#12151d;color:#c6cfdd;border:1px solid #1c2434;border-radius:6px;padding:3px 8px;font-size:12px">
+          ${Object.entries(BENCH_IDX).map(([k, v]) => `<option value="${k}" ${k === benchCode ? 'selected' : ''}>${v}</option>`).join('')}
+          <option value="_custom" ${benchCustom ? 'selected' : ''}>自选个股…</option>
+        </select>
+        <input id="km-bench-in" placeholder="如 sh600519 或 000001" value="${benchCustom ? esc(benchCode) : ''}" style="display:${benchCustom ? 'inline-block' : 'none'};background:#12151d;color:#c6cfdd;border:1px solid #1c2434;border-radius:6px;padding:3px 8px;font-size:12px;width:150px">
+        <button id="km-bench-go" style="background:#1b2436;color:#c6cfdd;border:1px solid #1c2434;border-radius:6px;padding:3px 12px;font-size:12px;cursor:pointer">对比</button>
+        <span id="km-bench-st" class="dim" style="font-size:11px">${benchBusy ? '基准拉取中…' : benchErrMsg ? '基准不可达：' + esc(benchErrMsg) : ''}</span>
+      </div>`;
       const render = () => {
         const bars = v.bars, last = bars[bars.length - 1], prev = bars.length > 1 ? bars[bars.length - 2] : null;
         const chg = prev ? (last[2] / prev[2] - 1) * 100 : null;
         const qtSec = qtHtml == null
           ? `<div class="dim" id="km-qtw" style="padding:6px 0;font-size:12px">${qtDone ? '实时快照不可达（网络受限或离线，不影响K线与技术统计）' : '实时快照拉取中（腾讯行情）…'}</div>`
           : qtHtml;
+        const cmpSec = benchP
+          ? cmpHTML(bars, benchP, cur)
+          : `<div class="dim" style="padding:8px 0;font-size:12px">${benchBusy ? '基准K线拉取中…' : benchErrMsg ? '请更换基准或稍后重试' : ''}</div>`;
         show(`<div class="km-head"><b>${esc(name || code)}</b><span class="c num">${esc(code)}</span>
           <span style="font-size:17px;font-weight:700">${last[2].toFixed(2)}</span>
           ${chg != null ? `<span style="color:${chg >= 0 ? '#ff5a5a' : '#2fbf8f'};font-weight:700">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</span>` : ''}
@@ -236,13 +326,28 @@
           <span class="km-close" ${closeBtn}>✕</span></div>
           ${candleSVG(bars, cur)}
           ${kstatHTML(bars)}
+          <div style="margin-top:12px;font-size:12px;font-weight:700;color:#c6cfdd">对比分析</div>
+          ${benchCtl()}
+          ${cmpSec}
           <div style="margin-top:12px;font-size:12px;font-weight:700;color:#c6cfdd">实时快照</div>
           ${qtSec}
           ${note}
           <div class="km-meta"><span>📅 ${bars.length} 根 · ${bars[0][0]} ~ ${last[0]}</span><span>💾 IndexedDB 当日缓存</span><span>腾讯前复权日K · 仓库分片</span></div>`);
         box.querySelectorAll('.km-rng button').forEach(b => { b.onclick = () => { cur = +b.dataset.r; render(); }; });
+        const sel = box.querySelector('#km-bench'), inp = box.querySelector('#km-bench-in'), go = box.querySelector('#km-bench-go');
+        if (sel) sel.onchange = () => {
+          if (sel.value === '_custom') { benchCustom = true; render(); const i2 = box.querySelector('#km-bench-in'); if (i2) i2.focus(); }
+          else { benchCustom = false; benchCode = sel.value; loadBench(); }
+        };
+        if (go) go.onclick = () => {
+          const nc = normCode(benchCustom ? (inp ? inp.value : '') : benchCode);
+          if (!nc) { box.querySelector('#km-bench-st').textContent = '代码格式无法识别（示例：600519 / sh600519）'; return; }
+          benchCode = nc; loadBench();
+        };
+        if (inp) inp.onkeydown = e => { if (e.key === 'Enter') go.click(); };
       };
       render();
+      loadBench();
       qtQuote(code).then(q => { qtHtml = qtHTML(q); const w = box.querySelector('#km-qtw'); if (w) w.outerHTML = qtHtml; })
         .catch(() => { qtDone = true; const w = box.querySelector('#km-qtw'); if (w) w.textContent = '实时快照不可达（网络受限或离线，不影响K线与技术统计）'; });
     } catch (e) {
