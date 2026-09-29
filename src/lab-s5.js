@@ -86,22 +86,13 @@
   $id('s5-add').onclick = addStock;
   $id('s5-input').addEventListener('keydown', e => { if (e.key === 'Enter') addStock(); });
 
-  /* ── 大盘哨兵（v4.9.14）：市场状态位置/炸板率/净买/趋势/仓位依据 ──
-     判定结果复用 Tab6 暴露的 window.__mktState（缺失时本地兜底重算） */
+  /* ── v4.9.15: 每张自选股卡片内嵌「市场位置 + 个股信号 + 仓位依据」 ──
+     市场判定复用 Tab6 暴露的 window.__mktState（缺失时本地兜底重算，与 Tab6 同规则） */
   function stripTags(s){return String(s||'').replace(/<[^>]+>/g,'');}
-  function spark(vals){ // 近 5 日情绪分迷你折线（涨红跌绿）
-    const w=110,h=28,p=3;
-    if(!vals.length)return '';
-    const mn=Math.min(...vals),mx=Math.max(...vals),rg=(mx-mn)||1;
-    const pts=vals.map((v,i)=>(p+i*(w-2*p)/Math.max(1,vals.length-1)).toFixed(1)+','+(h-p-(v-mn)/rg*(h-2*p)).toFixed(1)).join(' ');
-    const col=vals[vals.length-1]>=vals[0]?'#ff5a5a':'#2fbf8f';
-    return `<svg width="${w}" height="${h}" style="vertical-align:middle" aria-label="近5日情绪分走势"><polyline points="${pts}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round"/></svg>`;
-  }
-  function renderMarket(){
-    const host=$id('s5-market'); if(!host)return;
-    const E=CUR.emotion||{},S=CUR.summary||{};
+  function getMktState(){
+    const E=CUR.emotion||{};
     let MS=window.__mktState;
-    if(!MS){ // 兜底: 主脚本异常时本地重算（与 Tab6 同规则）
+    if(!MS){
       const vals=DAYS.map(d=>d.emotion&&d.emotion.value).filter(v=>v!=null);
       const ref=vals.length>3?vals[vals.length-4]:vals[0];
       const d3=(E.value||0)-(ref!=null?ref:(E.value||0));
@@ -110,38 +101,78 @@
       const st=v<30?'ice':v>65?'hot':d3>=4?'rec':(d3<=-4&&recentHot)?'ret':'neu';
       MS={st,name:{ice:'❄ 冰点区',rec:'📈 回升期',neu:'➖ 中性区',hot:'🔥 偏热区',ret:'🌧 退潮期'}[st],play:[],warns:[],d3};
     }
+    return MS;
+  }
+  function spark(vals){ // 近 5 点迷你折线（涨红跌绿）
+    const w=96,h=24,p=3;
+    if(!vals||vals.length<2)return '';
+    const mn=Math.min(...vals),mx=Math.max(...vals),rg=(mx-mn)||1;
+    const pts=vals.map((v,i)=>(p+i*(w-2*p)/(vals.length-1)).toFixed(1)+','+(h-p-(v-mn)/rg*(h-2*p)).toFixed(1)).join(' ');
+    const col=vals[vals.length-1]>=vals[0]?'#ff5a5a':'#2fbf8f';
+    return `<svg width="${w}" height="${h}" style="vertical-align:middle" aria-label="近5日走势"><polyline points="${pts}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round"/></svg>`;
+  }
+  function trend5(code){ // 个股近 5 日收盘走势
+    const cl=(D.stocks[code]||{}).closes||[];
+    if(cl.length<2)return null;
+    const l5=cl.slice(-5);
+    return {vals:l5.map(c=>c[1]),chg:(l5[l5.length-1][1]/l5[0][1]-1)*100};
+  }
+  // 个股仓位依据：市场状态 + 近3日方向 → 叠加该股资金/走势信号
+  function stockBasis(MS,dirTxt,lastNet,t5){
+    const mkt='<b style="color:var(--gold)">'+MS.name+'</b>（近3日'+dirTxt+'）';
+    const money=lastNet==null?'存档期未上榜':(lastNet>=0?'最近上榜<span class="up">净买 '+(lastNet>=0?'+':'')+fmtW(lastNet)+'</span>':'最近上榜<span class="down">净卖 '+fmtW(lastNet)+'</span>');
+    const trd=t5==null?'':('，近5日'+(t5>=0?'<span class="up">+'+t5.toFixed(1)+'%</span>':'<span class="down">'+t5.toFixed(1)+'%</span>'));
+    const bear=MS.st==='ice'||MS.st==='ret';
+    const coolWord=MS.st==='ice'?'冰点期':'退潮期';
+    let advice;
+    if(bear){
+      if(lastNet!=null&&lastNet<0)advice=mkt+'，该股'+money+' → '+coolWord+'资金在撤，反弹减仓、不补';
+      else if(lastNet!=null&&lastNet>0)advice=mkt+'，但该股'+money+' → 逆势有资金，轻仓跟踪、快进快出';
+      else advice=mkt+'，该股'+money+' → '+coolWord+'先看不动，等情绪回升再上仓位';
+    }else if(MS.st==='hot'){
+      if(t5!=null&&t5>=10)advice=mkt+'，该股'+money+trd+'已大涨 → 谨防高位分歧，只守龙头不追高';
+      else if(lastNet!=null&&lastNet>0)advice=mkt+'，该股'+money+' → 资金+情绪共振可持有，跌破5日线减';
+      else advice=mkt+'，该股'+money+' → 无资金认证观望为主，等上榜/放量再加';
+    }else{ // 回升 / 中性
+      if(lastNet!=null&&lastNet>0&&(t5==null||t5>0))advice=mkt+'，该股'+money+' → 资金与走势同向，可持有跟随';
+      else if(lastNet!=null&&lastNet<0)advice=mkt+'，该股'+money+' → 等资金回流再介入';
+      else advice=mkt+'，该股'+money+' → 中性市按兵不动，盯上榜信号';
+    }
+    return advice;
+  }
+  function renderCardExtra(code,tl){
+    const MS=getMktState(),E=CUR.emotion||{},S=CUR.summary||{};
     const d3=MS.d3||0;
-    // ① 状态位置: 五状态标签一排, 当前态高亮并带实际分值, 其余带分数区间
-    const seq=[['ice','❄ 冰点','&lt;30'],['rec','📈 回升','30~65 ↑'],['neu','➖ 中性','45~55'],['hot','🔥 偏热','&gt;65'],['ret','🌧 退潮','拐点 ↓']];
-    const tags=seq.map(([k,lab,rng])=>{
-      const on=k===MS.st;
-      return '<span style="display:inline-flex;align-items:center;gap:5px;padding:3px 11px;border-radius:16px;border:1.5px solid '+(on?'#e8b04b':'var(--line)')+';color:'+(on?'var(--gold)':'var(--faint)')+';font-size:12px;font-weight:'+(on?'700':'400')+';background:'+(on?'rgba(232,176,75,.08)':'transparent')+'">'+lab
-        +(on?' <b class="num" style="font-size:13px">'+(E.value!=null?E.value:'—')+'分</b>':' <span class="num" style="font-size:10.5px">'+rng+'</span>')+'</span>';
-    }).join('<span style="color:var(--faint);margin:0 2px">·</span>');
-    // ② 趋势: 近3日方向 + 近5日情绪分迷你折线
-    const v5=DAYS.slice(-5).map(d=>d.emotion&&d.emotion.value).filter(v=>v!=null);
     const dirTxt=d3>0.5?'上行':(d3<-0.5?'下行':'走平');
     const dirCls=d3>0.5?'up':(d3<-0.5?'down':'');
-    const g=(v,k,c)=>'<div style="background:var(--card);border:1px solid var(--line);border-radius:10px;padding:9px 12px;text-align:center"><div class="num" style="font-size:17px;font-weight:700;color:'+(c||'var(--txt)')+'">'+v+'</div><div style="font-size:11.5px;color:var(--dim)">'+k+'</div></div>';
-    const net=S.net_total_yi, zbl=S.zbl_pct;
-    // ③ 仓位依据: 状态 + 趋势 + 资金 + 炸板 → 对应打法
-    let basis='当前处于 <b style="color:var(--gold)">'+MS.name+'</b>（情绪分 <b class="num">'+(E.value!=null?E.value:'—')+'</b>，近 3 日 <span class="'+dirCls+'">'+dirTxt+' '+(d3>0?'+':'')+d3.toFixed(1)+' 分</span>）'
-      +'，龙虎榜资金'+(Number(net)>=0?'净流入 <span class="up num">'+(net>=0?'+':'')+net+'亿</span>':'净流出 <span class="down num">'+net+'亿</span>')
-      +'，炸板率 <b class="num">'+(zbl!=null?zbl+'%':'—')+'</b>'+((Number(zbl)||0)>30?'<span style="color:var(--gold)"> ⚠ 超 30% 警戒线</span>':'（正常）')
-      +' → '+(MS.play&&MS.play.length?stripTags(MS.play[0]):'按五状态对照表执行：位置 + 趋势 + 拐点 = 仓位依据。');
-    if(MS.warns&&MS.warns.length)basis+='<div style="margin-top:6px;color:var(--gold)">⚠ '+MS.warns.map(stripTags).join('；')+'</div>';
-    host.innerHTML='<div style="border:1px solid var(--line);border-radius:12px;padding:13px 15px;background:var(--panel)">'
-      +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px"><b style="font-size:13.5px">🛡 大盘哨兵</b><span class="dim" style="font-size:11.5px">市场位置一览 · 随每日存档自动更新 · '+CUR.trade_date+'</span></div>'
-      +'<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">'+tags+'</div>'
-      +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:9px;margin:11px 0">'
-      +g((zbl!=null?zbl+'%':'—'),'炸板率'+((Number(zbl)||0)>30?' ⚠':''),(Number(zbl)||0)>30?'var(--gold)':null)
-      +g((Number(net)>=0?'+':'')+(net!=null?net:'—')+'亿','龙虎榜净买'+(S.net_total_yi!=null?'（分位 '+(E.net_pct_rank!=null?E.net_pct_rank+'%':'—')+'）':''),Number(net)>=0?'var(--up)':'var(--down)')
-      +'<div style="background:var(--card);border:1px solid var(--line);border-radius:10px;padding:9px 12px;text-align:center"><div>'+(spark(v5)||'<span class="dim">—</span>')+'</div><div style="font-size:11.5px;color:var(--dim)">情绪趋势 · 近 3 日 <span class="'+dirCls+'">'+dirTxt+'</span></div></div>'
-      +'</div>'
-      +'<div style="background:var(--card);border:1px solid var(--line);border-radius:10px;padding:11px 14px;font-size:12.5px;line-height:1.8"><b style="color:var(--gold)">📋 仓位依据</b>　'+basis+'</div>'
+    // ① 状态位置: 五状态标签一行, 当前态高亮并带实际情绪分值, 其余带分数区间
+    const seq=[['ice','❄ 冰点','&lt;30'],['rec','📈 回升','30~65↑'],['neu','➖ 中性','45~55'],['hot','🔥 偏热','&gt;65'],['ret','🌧 退潮','拐点↓']];
+    const tags=seq.map(([k,lab,rng])=>{
+      const on=k===MS.st;
+      return '<span style="display:inline-flex;align-items:center;gap:3px;padding:2px 8px;border-radius:14px;border:1.5px solid '+(on?'#e8b04b':'var(--line)')+';color:'+(on?'var(--gold)':'var(--faint)')+';font-size:10.5px;font-weight:'+(on?'700':'400')+';background:'+(on?'rgba(232,176,75,.08)':'transparent')+'">'+lab
+        +(on?' <b class="num" style="font-size:11px">'+(E.value!=null?E.value:'—')+'分</b>':' <span class="num" style="font-size:9.5px">'+rng+'</span>')+'</span>';
+    }).join('<span style="color:var(--faint);margin:0 1px">·</span>');
+    // ② 指标行: 炸板率(市场) + 该股最近净买 + 该股近5日趋势折线
+    const zbl=S.zbl_pct;
+    const lastLhb=tl.length?tl[tl.length-1]:null;
+    const t5=trend5(code);
+    const cell=(v,k,c)=>'<div style="flex:1;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:6px 4px;text-align:center"><div class="num" style="font-size:13.5px;font-weight:700;color:'+(c||'var(--txt)')+'">'+v+'</div><div style="font-size:10px;color:var(--dim)">'+k+'</div></div>';
+    const cells='<div style="display:flex;gap:6px;margin:7px 0">'
+      +cell((zbl!=null?zbl+'%':'—'),'炸板率'+((Number(zbl)||0)>30?' ⚠':''),(Number(zbl)||0)>30?'var(--gold)':null)
+      +cell(lastLhb?((lastLhb.net>=0?'+':'')+fmtW(lastLhb.net)):'—',lastLhb?'净买 '+lastLhb.date.slice(5):'净买(未上榜)',lastLhb?(lastLhb.net>=0?'var(--up)':'var(--down)'):null)
+      +'<div style="flex:1.4;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:4px 6px;text-align:center"><div>'+(t5?spark(t5.vals):'<span class="dim" style="font-size:11px">—</span>')+'</div><div style="font-size:10px;color:var(--dim)">'+(t5?'近5日 <span class="'+(t5.chg>=0?'up':'down')+'">'+(t5.chg>=0?'+':'')+t5.chg.toFixed(1)+'%</span>':'价走势缺档')+'</div></div>'
+      +'</div>';
+    // ③ 仓位依据
+    const basis=stockBasis(MS,dirTxt,lastLhb?lastLhb.net:null,t5?t5.chg:null);
+    const warns=MS.warns&&MS.warns.length?'<div style="margin-top:4px;color:var(--gold);font-size:10.5px">⚠ '+MS.warns.map(stripTags).join('；')+'</div>':'';
+    return '<div style="margin-top:8px;border-top:1px dashed var(--line);padding-top:7px">'
+      +'<div style="font-size:10px;color:var(--dim);margin-bottom:4px">📍 状态位置 · '+CUR.trade_date+'</div>'
+      +'<div style="display:flex;flex-wrap:wrap;gap:3px;align-items:center">'+tags+'</div>'
+      +cells
+      +'<div style="font-size:11px;line-height:1.65;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:6px 9px"><b style="color:var(--gold);font-size:10.5px">📋 仓位依据</b>　'+basis+'</div>'
+      +warns
       +'</div>';
   }
-  renderMarket();
 
   function render() {
     const host = $id('s5-cards');
@@ -164,6 +195,7 @@
         </div>
         ${h ? `<div style="margin-top:4px;font-size:12px">题材 <span class="dim">${h.date.slice(5)}:</span> ${(h.reason || '—').split('+').slice(0, 4).map(t => `<span class="tag">${t.trim()}</span>`).join('')}</div>` : ''}
         <div style="margin-top:6px">${al}</div>
+        ${renderCardExtra(code, tl)}
       </div>`;
     }).join('');
     host.querySelectorAll('[data-del]').forEach(b => b.onclick = () => {
