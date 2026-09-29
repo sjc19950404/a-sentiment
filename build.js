@@ -232,6 +232,14 @@ const siteDir = process.env.SENT_SITE_DIR || 'C:\\Users\\Administrator\\WorkBudd
 if (!fs.existsSync(siteDir)) fs.mkdirSync(siteDir, { recursive: true });
 fs.writeFileSync(path.join(siteDir, 'index.html'), out);
 
+// v4.9.12: 实战使用指南随产物发布（Tab6 内嵌 iframe 同源加载 guide.html）
+const guideSrc = path.join(__dirname, 'guide.html');
+if (fs.existsSync(guideSrc)) {
+  fs.copyFileSync(guideSrc, path.join(distDir, 'guide.html'));
+  fs.copyFileSync(guideSrc, path.join(siteDir, 'guide.html'));
+  console.log('指南随产物: guide.html → dist/ + 发布目录/');
+}
+
 // v4.3: 同步 task-manager 静态目录（线上挂载点——原在 fetch-daily.js 尾部, 收进 build 保证任何构建后产物一致）
 const taskPublic = path.join(__dirname, '..', 'task-manager', 'public', 'sentiment.html');
 if (fs.existsSync(path.dirname(taskPublic))) fs.copyFileSync(outFile, taskPublic);
