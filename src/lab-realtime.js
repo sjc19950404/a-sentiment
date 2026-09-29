@@ -183,7 +183,9 @@
     if (!ms) return;
     timer = setTimeout(() => { if (!document.hidden) refresh(); schedule(); }, ms);
   }
-  function startStop() { schedule(); }
+  // v4.9.6: 看门狗只在轮询链已停(timer=null)时补启——否则整分钟对齐会把
+  // 尚未到期的链上定时器 clearTimeout 重排, 30s 链被打成 60s 稳态(0929 实测复现)
+  function startStop() { if (!timer) schedule(); }
 
   $id('rt-refresh').onclick = () => { refresh(); LAB.toast('正在拉取实时快照…'); };
   document.addEventListener('visibilitychange', () => { if (!document.hidden) { refresh(); startStop(); } });
