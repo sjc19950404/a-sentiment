@@ -211,6 +211,7 @@ textarea:focus{outline:none;border-color:#33415c}
   <div class="tab" data-p="p3">🕰️ 历史回看</div>
   <div class="tab" data-p="p4">📡 信号中心</div>
   <div class="tab" data-p="p5">🧪 实验室</div>
+  <div class="tab" data-p="p6">🎯 今日状态</div>
 </div>
 
 <div class="warn">⚠️ 「信号中心」为统计外推与动量跟踪（数学），不是行情预测（玄学）。任何分值/趋势仅供参考复盘，不构成投资建议。</div>
@@ -391,6 +392,26 @@ textarea:focus{outline:none;border-color:#33415c}
   </section>
 </div>
 
+<!-- ═══ Tab6 今日状态（作战卡） ═══ -->
+<div class="pane" id="p6">
+  <section data-modtip="<b>今天市场处于哪种情绪状态、该注意什么</b>：系统按固定规则（冰点/回升/中性/偏热/退潮）自动判定，并叠加资金与炸板预警。<br>每天随存档数据自动更新，判定规则见下方表格，判错了可以逐条核对。">
+    <h2>今日状态 <span class="note" id="state-note"></span></h2>
+    <div id="state-card"></div>
+  </section>
+  <section data-modtip="<b>机器怎么判的</b>：五个状态的判定条件全部写死在这里，与《实战使用指南》同口径。看不懂判定结果时来这里对规则。">
+    <h2>判定规则 <span class="note">五状态 · 位置 + 趋势 + 拐点 = 仓位依据</span></h2>
+    <div class="tbl-box"><table id="tbl-staterule">
+      <tr><th>状态</th><th>判定条件</th><th>常见思路（经验参考，非操作指令）</th></tr>
+      <tr><td style="color:#5b8cff">❄ 冰点区</td><td>情绪分 &lt; 30</td><td>统计上是中线「分批区域」：分批、慢买、买超跌不买强势；忌追当日热点</td></tr>
+      <tr><td style="color:var(--down)">📈 回升期</td><td>30~65 且近 3 日累升 ≥ 4 分</td><td>顺势跟随主流题材，仓位随情绪抬升逐步放大；做强于大盘的票胜率相对高</td></tr>
+      <tr><td style="color:var(--dim)">➖ 中性区</td><td>45~55 震荡、方向不明</td><td>降低频率——震荡市频繁交易是散户最大亏损来源，适合做功课等方向</td></tr>
+      <tr><td style="color:var(--up)">🔥 偏热区</td><td>情绪分 &gt; 65</td><td>持仓黄金期但不宜新开重仓；盯见顶前兆：炸板率跳升、净买转负</td></tr>
+      <tr><td style="color:var(--gold)">🌧 退潮期</td><td>近 5 日曾有 &gt;65 高点，且近 3 日累跌 ≥ 4 分</td><td>收缩仓位、停做接力；翻历史回看页找上次退潮见底特征，写好冰点应对计划</td></tr>
+    </table></div>
+    <div class="sec-desc">叠加预警（任何状态自动检查）：偏热 + 龙虎榜净买 &lt; 0 → 诱多风险；炸板率 &gt; 30% → 接力恶化；冰点 + 净买 &gt; 0 → 转折观察。本模块为统计口径的方法演示，<b>不构成投资建议</b>。</div>
+  </section>
+</div>
+
 <footer>
   <div><b>数据来源：</b>东方财富·数据中心「龙虎榜」(<span class="num">RPT_DAILYBILLBOARD_DETAILSNEW</span>)；同花顺·热点强势股题材归因(<span class="num">zx.10jqka.com.cn</span>)；同花顺·行业指数日K(<span class="num">d.10jqka.com.cn</span>, 881xxx 板块涨跌榜与 5 日动量由日K重建；原东财 push2his 对本机 IP 受限后切换)；腾讯·指数与个股日K(<span class="num">web.ifzq.gtimg.cn</span>)。</div>
   <div><b>系统口径：</b>仅含交易日（以指数日K校验，休市日自动剔除）；每日快照由自动管道入库（交易日 18:30）；情绪指数 v4.3 七因子 = 龙虎榜净买20%+净买家数比10%+行业广度20%+题材热度10%+涨跌停对比15%+封板质量10%+量能15%（池/额数据缺失日对应因子按中性 50 补位，meta.dataQuality 有记录），分位为在全部存档日中的排名；外推=近10点最小二乘线性回归延后3个交易日；点击任意股票查看个股详情（K线走势/上榜历史/题材归因+资金画像，全离线）。<b>实验室</b>：个人数据（权重口径/预测/哨兵/笔记）仅存本机浏览器 localStorage，不上传；<b>实时条</b>：腾讯指数+东财涨停池 JSONP 直连，交易时段 30s 轮询，盘外显示最近收盘快照。生成时间 2026-09-27 11:50 · 存档 <b id="ft-count"></b> 个交易日。</div>
@@ -540,6 +561,49 @@ document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
   document.querySelectorAll('.pane').forEach(x=>x.classList.remove('on'));
   t.classList.add('on'); $id(t.dataset.p).classList.add('on');
 });
+
+/* ═══ Tab6 今日状态（作战卡） v4.9.11 ═══ */
+(function(){
+  const L=DAYS[DAYS.length-1], E=L.emotion||{}, S=L.summary||{};
+  const vals=DAYS.map(d=>d.emotion&&d.emotion.value).filter(v=>v!=null);
+  const ref=vals.length>3?vals[vals.length-4]:vals[0];
+  const d3=E.value-(ref!=null?ref:E.value);
+  const recentHot=DAYS.slice(-6,-1).some(x=>x.emotion&&x.emotion.value>65);
+  let st,name,col,play;
+  if(E.value<30){st='ice';name='❄ 冰点区';col='#5b8cff';
+    play=['统计上是中线「分批区域」：分批、慢买、买超跌不买强势','<b>忌追当日热点</b>——冰点期热点次日死亡率极高','把候选池功课做在低位，等回升期确认再动手'];}
+  else if(E.value>65){st='hot';name='🔥 偏热区';col='var(--up)';
+    play=['持仓者的黄金期，但<b>不适合新开重仓</b>','盯两个见顶前兆：<b>炸板率跳升</b>、<b>龙虎榜净买转负</b>','二者同时出现，减仓动作要快于犹豫'];}
+  else if(d3>=4){st='rec';name='📈 回升期';col='var(--down)';
+    play=['最舒服的做多窗口：顺势跟随主流题材','仓位随情绪抬升逐步放大，不一次打满','在个股对比里筛<b>强于大盘</b>的票，弱于大盘的放弃'];}
+  else if(d3<=-4&&recentHot){st='ret';name='🌧 退潮期';col='var(--gold)';
+    play=['短线客亏损最集中阶段：<b>收缩仓位、停做接力</b>','空仓也是策略，别急于抄底半山腰','去「历史回看」找上次退潮的见底特征，写好冰点应对计划'];}
+  else {st='neu';name='➖ 中性区';col='var(--dim)';
+    play=['降低频率——震荡市频繁交易是散户最大亏损来源','题材一天一换不追高，做功课更新自选池','等方向选出来（连 3 天同向）再行动'];}
+  const warns=[];
+  if(st==='hot'&&(S.net_total_yi||0)<0)warns.push('情绪偏热但龙虎榜资金净流出（'+S.net_total_yi+' 亿）——警惕诱多，收缩新仓。');
+  if((S.zbl_pct||0)>30)warns.push('炸板率 '+S.zbl_pct+'% 已超 30% 警戒线——打板资金胜率恶化，是退潮期最灵敏的前兆。');
+  if(st==='ice'&&(S.net_total_yi||0)>0)warns.push('情绪冰点但资金已净流入 '+S.net_total_yi+' 亿——留意转折信号，可开始列观察清单。');
+  const dir=d3>0.5?'<span class="up">↑ '+d3.toFixed(1)+' 分</span>':(d3<-0.5?'<span class="down">↓ '+(-d3).toFixed(1)+' 分</span>':'走平');
+  const g=(v,k,c)=>'<div style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;text-align:center"><div class="num" style="font-size:19px;font-weight:700;color:'+(c||'var(--txt)')+'">'+v+'</div><div style="font-size:12px;color:var(--dim)">'+k+'</div></div>';
+  const concepts=(S.concept_top||[]).slice(0,3).map(c=>c.tag+'('+c.count+')').join(' · ');
+  let h='<div style="display:inline-block;padding:4px 18px;border-radius:24px;font-size:17px;font-weight:700;border:1.5px solid '+col+';color:'+col+'">'+name+'</div>';
+  h+='<p style="margin-top:10px"><b>'+L.trade_date+'</b> · 情绪分 <b class="num" style="font-size:20px">'+E.value+'</b> · 较 3 日前 '+dir+'（分位 '+(E.pct_rank!=null?E.pct_rank+'%':'—')+'）</p>';
+  h+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(128px,1fr));gap:9px;margin:10px 0">'
+    +g((S.net_total_yi>=0?'+':'')+(S.net_total_yi!=null?S.net_total_yi:'—')+'亿','龙虎榜净买（分位 '+(E.net_pct_rank!=null?E.net_pct_rank+'%':'—')+'）',S.net_total_yi>=0?'var(--up)':'var(--down)')
+    +g((S.zt_count!=null?S.zt_count:'—')+' / '+(S.dt_count!=null?S.dt_count:'—'),'涨停 / 跌停')
+    +g(S.zbl_pct!=null?S.zbl_pct+'%':'—','炸板率'+((S.zbl_pct||0)>30?' ⚠':'（&lt;30% 正常）'),(S.zbl_pct||0)>30?'var(--gold)':null)
+    +g((S.max_lb||'—')+' 板','连板高度')
+    +g(S.amount_yi!=null?(S.amount_yi/10000).toFixed(2)+'万亿':(S.amount_yi?S.amount_yi+'亿':'—'),'两市成交')
+    +(S.yzt_chg!=null?g((S.yzt_chg>0?'+':'')+S.yzt_chg+'%','昨日涨停指数','var(--up)'):'')
+    +'</div>';
+  if(concepts)h+='<p><b>今日题材 TOP</b>：'+concepts+'</p>';
+  if(warns.length)h+='<div style="background:rgba(232,176,75,.08);border:1px solid rgba(232,176,75,.35);border-radius:10px;padding:11px 15px;margin:10px 0"><b class="gold">⚠ 自动预警</b><ul style="margin:4px 0 0 20px">'+warns.map(w=>'<li>'+w+'</li>').join('')+'</ul></div>';
+  h+='<div style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:13px 16px;margin-top:10px"><b class="gold">对应作战要点（'+name+'）</b><ul style="margin:6px 0 0 20px">'+play.map(p=>'<li>'+p+'</li>').join('')+'</ul></div>';
+  h+='<div class="sec-desc" style="margin-top:8px">单日值不重要，连续 3 天的方向才重要；判定规则见下方表格。以上为统计口径的方法演示，不构成投资建议。</div>';
+  $id('state-card').innerHTML=h;
+  $id('state-note').textContent='五状态自动判定 · '+DAYS.length+' 个交易日存档';
+})();
 
 /* ── 通用横向条形 ── */
 function barh(items,opt){
