@@ -233,8 +233,8 @@ textarea:focus{outline:none;border-color:#33415c}
 <div class="pane" id="p2">
   <div class="kpis" id="emo-kpis" data-modtip="<b>今天市场情绪的几个关键数字</b>：情绪多少分、在历史里算高还是低、资金净买多少。"></div>
   <section data-modtip="<b>用 0~100 分表示今天市场热不热</b>：分数越高越亢奋，越低越冷清，由 7 个指标加权算出。<br>金色虚线是按最近走势的机械延长，只是参考，不是预测。<br>鼠标放到曲线上能看每天的具体数字。">
-    <h2>市场情绪指数 <span class="note">0-100 · 四子指标加权 · 金色虚线=线性外推(统计,非预测)</span></h2>
-    <div class="sec-desc">子指标: 龙虎榜净买(35%) + 净买家数比(25%) + 行业广度(25%) + 题材热度(15%) · 悬停数据点查看明细</div>
+    <h2>市场情绪指数 <span class="note">0-100 · 七因子加权 · 金色虚线=线性外推(统计,非预测) · 纵轴 <b id="emo-axis">—</b> 自适应 · 细虚线=冰点30 / 偏热65</span></h2>
+    <div class="sec-desc">官方七因子: 净买(20%) + 家数比(10%) + 行业广度(20%) + 题材热度(10%) + 涨跌停对比(15%) + 封板质量(10%) + 量能(15%) · 悬停数据点查看明细</div>
     <div id="svg-emotion"></div></section>
   <section data-modtip="<b>上榜资金今天整体在买还是在卖</b>：所有龙虎榜股票的净买入加总。红柱=资金在进场，绿柱=在撤退。这是情绪分数里最重要的一个指标。"><h2>龙虎榜净买入合计 <span class="note">单位 ¥亿 · 红=净买入 绿=净卖出</span></h2><div id="svg-net"></div></section>
 </div>
@@ -446,6 +446,19 @@ const UP='#ff5a5a',DOWN='#2fbf8f',DIM='#8a94a6',FAINT='#5a6478',LINE='#212a3a',G
 function el(t,a,x){const e=document.createElementNS(NS,t);for(const k in a){if(k.slice(0,2)==='on'&&typeof a[k]==='function')e[k]=a[k];else e.setAttribute(k,a[k]);}if(x!=null)e.textContent=x;return e;}
 function fmtW(w){const a=Math.abs(w);if(a>=10000)return (w/10000).toFixed(2)+'亿';if(a>=1)return Math.round(w).toLocaleString()+'万';return w.toFixed(1)+'万';}
 function cls(v){return v>0?'up':(v<0?'down':'');}
+/* 自适应纵轴（v4.9.10）：0-100 分制序列不再固定全幅——
+   按数据范围外扩 15%（至少 3 分）后吸附到 5 的倍数，跨度不足 10 分补足，
+   避免曲线被压成中间一条、上下各空一大截（实测占高 58.4% → 73.0%）。 */
+function axisRange(vals){
+  const arr=(vals||[]).filter(v=>v!=null&&isFinite(v));
+  if(!arr.length)return {lo:0,hi:100};
+  const mx=Math.max.apply(null,arr), mn=Math.min.apply(null,arr);
+  const pad=Math.max(3,(mx-mn)*0.15);
+  let lo=Math.max(0,mn-pad), hi=Math.min(100,mx+pad);
+  lo=Math.floor(lo/5)*5; hi=Math.ceil(hi/5)*5;
+  if(hi-lo<10)hi=Math.min(100,lo+10);
+  return {lo,hi};
+}
 /* 全局 HTML 转义（v4.8.6）：供 _openTopic 等全局函数使用；局部 IIFE 内的同名副本仍各自遮蔽 */
 function escHtml(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function pct(v,d=2){return (v>0?'+':'')+v.toFixed(d)+'%';}
@@ -727,11 +740,24 @@ window.__v43dbg = { divergence, topicStrength }; // 测试钩子（只读）
   // 主图
   const W=1200,H=340,L=52,R=70,T=16,B=30;
   const total=n+FC, stepX=(W-L-R)/Math.max(total-1,1);
-  const Y=v=>T+(100-v)/100*(H-T-B), X=i=>L+i*stepX;
+  // 纵轴自适应（v4.9.10）：把外推段一并纳入取值域，避免金色虚线跑出画布被截断
+  const ax=axisRange(vals.concat(fc));
+  const lo=ax.lo, hi=ax.hi;
+  const Y=v=>T+(hi-Math.max(lo,Math.min(hi,Number(v)||0)))/(hi-lo)*(H-T-B), X=i=>L+i*stepX;
   const svg=el('svg',{viewBox:`0 0 ${W} ${H}`});
-  [0,25,50,75,100].forEach(v=>{
+  const axSpan=hi-lo, axStep=axSpan/4>=20?20:(axSpan/4>=10?10:5), ticks=[];
+  for(let v=lo;v<=hi+1e-9;v+=axStep)ticks.push(Math.round(v*10)/10);
+  if(ticks[ticks.length-1]<hi-1e-9)ticks.push(hi);
+  ticks.forEach(v=>{
     svg.appendChild(el('line',{x1:L,y1:Y(v),x2:W-R,y2:Y(v),stroke:v===50?LINE:'#171e2c','stroke-width':1,'stroke-dasharray':v===50?'5,5':''}));
     svg.appendChild(el('text',{x:L-8,y:Y(v)+4,fill:FAINT,'font-size':10.5,'text-anchor':'end'},v));
+  });
+  // 冰点/偏热阈值参考线（落在轴范围内才画）
+  [[30,'冰点'],[65,'偏热']].forEach(p=>{
+    if(p[0]<=lo||p[0]>=hi)return;
+    const y=Y(p[0]);
+    svg.appendChild(el('line',{x1:L,y1:y,x2:W-R,y2:y,stroke:GOLD,'stroke-width':1,'stroke-dasharray':'3,6',opacity:.5}));
+    svg.appendChild(el('text',{x:W-R-2,y:y-3,fill:GOLD,'font-size':10,'text-anchor':'end',opacity:.65},p[1]));
   });
   // 面积
   let area=`M ${X(0)} ${Y(vals[0])}`;
@@ -755,8 +781,9 @@ window.__v43dbg = { divergence, topicStrength }; // 测试钩子（只读）
     if(i%5===0||i===n-1)svg.appendChild(el('text',{x:X(i),y:H-8,fill:FAINT,'font-size':10,'text-anchor':'middle'},d.trade_date.slice(5)));
   });
   for(let j=0;j<FC;j++)svg.appendChild(el('text',{x:X(n+j),y:H-8,fill:GOLD,'font-size':10,'text-anchor':'middle',opacity:.7},'+'+(j+1)+'日'));
-  svg.appendChild(el('text',{x:W-R,y:Y(100)-2,fill:FAINT,'font-size':10.5,'text-anchor':'end'},'── 情绪指数 ──'));
+  svg.appendChild(el('text',{x:W-R,y:Y(hi)-2,fill:FAINT,'font-size':10.5,'text-anchor':'end'},'── 情绪指数 ──'));
   $id('svg-emotion').appendChild(svg);
+  const axLab=$id('emo-axis'); if(axLab)axLab.textContent=lo+'~'+hi;
 
   // 净买柱状
   const W2=1200,H2=170,L2=52,R2=30,T2=10,B2=26;
