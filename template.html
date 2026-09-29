@@ -412,6 +412,11 @@ textarea:focus{outline:none;border-color:#33415c}
       <span class="dim" style="margin-left:auto">›</span>
     </div>
   </section>
+  <section data-modtip="<b>每个状态里资金最突出的个股</b>：把全部存档日逐日归入五个状态，各状态内按累计龙虎榜净买绝对值取前 20 只（合计 ≤100 只）。点任意一只打开个股详情（K线/上榜历史/题材归因）。">
+    <h2>状态代表个股 <span class="note" id="ststocks-note"></span></h2>
+    <div id="st-stocks"></div>
+    <div class="sec-desc">归集口径：某交易日的状态由当日及此前几日的情绪分按上方规则逐日判定；个股净买为该状态内全部交易日龙虎榜净额求和（全榜营业部口径），按绝对值排序代表「资金最活跃」。代表 ≠ 推荐——退潮/冰点期的高位净卖个股同样是重要信号。</div>
+  </section>
   <section data-modtip="<b>机器怎么判的</b>：五个状态的判定条件全部写死在这里，与《实战使用指南》同口径。看不懂判定结果时来这里对规则。">
     <h2>判定规则 <span class="note">五状态 · 位置 + 趋势 + 拐点 = 仓位依据</span></h2>
     <div class="tbl-box"><table id="tbl-staterule">
@@ -634,6 +639,72 @@ document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
   $id('gm-close').onclick=()=>mask.classList.remove('on');
   mask.addEventListener('click',e=>{ if(e.target===mask)mask.classList.remove('on'); });
   document.addEventListener('keydown',e=>{ if(e.key==='Escape')mask.classList.remove('on'); });
+})();
+
+/* ── Tab6 状态代表个股（v4.9.13）：全部存档日逐日归入五状态, 各状态取累计龙虎榜净买 |绝对值| TOP20 ── */
+(function(){
+  const vals=DAYS.map(d=>d.emotion&&d.emotion.value).filter(v=>v!=null);
+  const META={ice:{name:'❄ 冰点区',col:'#5b8cff'},rec:{name:'📈 回升期',col:'var(--down)'},neu:{name:'➖ 中性区',col:'var(--dim)'},hot:{name:'🔥 偏热区',col:'var(--up)'},ret:{name:'🌧 退潮期',col:'var(--gold)'}};
+  function dayState(i){ // 与作战卡同规则, 但逐日回放历史
+    const day=DAYS[i]; if(!day||!day.emotion||day.emotion.value==null)return null;
+    const v=day.emotion.value;
+    const ref=i>3&&DAYS[i-3].emotion&&DAYS[i-3].emotion.value!=null?DAYS[i-3].emotion.value:v;
+    const d3=v-ref;
+    const recentHot=DAYS.slice(Math.max(0,i-5),i).some(x=>x.emotion&&x.emotion.value>65);
+    if(v<30)return 'ice';
+    if(v>65)return 'hot';
+    if(d3>=4)return 'rec';
+    if(d3<=-4&&recentHot)return 'ret';
+    return 'neu';
+  }
+  const groups={ice:[],rec:[],neu:[],hot:[],ret:[]};
+  DAYS.forEach((d,i)=>{const s=dayState(i);if(s)groups[s].push(i);});
+  const cur=dayState(DAYS.length-1)||'neu';
+  const TOPN=20; // 5 状态 × 20 = 上限 100 只
+  let h='',totalChips=0;
+  Object.keys(META).forEach(k=>{
+    const idxs=groups[k], m=META[k];
+    const open=k===cur;
+    if(!idxs.length){
+      h+='<div style="border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin:8px 0"><b style="color:'+m.col+'">'+m.name+'</b> <span class="dim" style="font-size:12px">存档期内暂无该状态的交易日</span></div>';
+      return;
+    }
+    const agg={};
+    idxs.forEach(i=>{
+      const rows=(DAYS[i].lhb_aggr&&DAYS[i].lhb_aggr.length?DAYS[i].lhb_aggr:DAYS[i].lhb)||[];
+      rows.forEach(r=>{
+        if(!r||!r.code)return;
+        const a=agg[r.code]||(agg[r.code]={code:r.code,name:r.name,net:0,days:0,close:r.close,chg:r.change_pct});
+        a.net+=(r.net_buy_wan||0); a.days++;
+        if(!a.lastDay||DAYS[i].trade_date>a.lastDay){a.lastDay=DAYS[i].trade_date;a.close=r.close;a.chg=r.change_pct;}
+      });
+    });
+    const top=Object.values(agg).sort((x,y)=>Math.abs(y.net)-Math.abs(x.net)).slice(0,TOPN);
+    totalChips+=top.length;
+    const d0=DAYS[idxs[0]].trade_date,d1=DAYS[idxs[idxs.length-1]].trade_date;
+    h+='<div style="border:1px solid '+(open?m.col:'var(--line)')+';border-radius:10px;margin:8px 0;overflow:hidden">'
+      +'<div class="pick stgrp-head" data-g="'+k+'" style="display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer;'+(open?'background:rgba(255,255,255,.03)':'')+'">'
+      +'<b style="color:'+m.col+'">'+m.name+'</b>'
+      +'<span class="dim" style="font-size:12px">'+idxs.length+' 个交易日（'+d0.slice(5)+'~'+d1.slice(5)+'）· 代表股 '+top.length+' 只</span>'
+      +'<span class="dim" style="margin-left:auto">'+(open?'▾':'▸')+'</span></div>'
+      +'<div class="stgrp-body" style="display:'+(open?'block':'none')+';padding:4px 12px 12px">'
+      +'<div style="display:flex;flex-wrap:wrap;gap:6px">'
+      +top.map(a=>'<span class="pick" data-code="'+a.code+'" title="累计净买 '+fmtW(a.net)+' · '+a.days+' 天上榜 · 点击看个股详情" style="display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:8px;padding:4px 9px;font-size:12.5px;background:var(--panel)">'
+        +'<b>'+escHtml(a.name)+'</b><span class="code num" style="font-size:11px;color:var(--faint)">'+a.code+'</span>'
+        +'<span class="num '+cls(a.net)+'" style="font-weight:700">'+(a.net>=0?'+':'')+fmtW(a.net)+'</span>'
+        +'<span class="dim" style="font-size:11px">'+a.days+'天</span></span>').join('')
+      +'</div></div></div>';
+  });
+  $id('st-stocks').innerHTML=h;
+  $id('ststocks-note').textContent='逐日归档 × 龙虎榜净买 TOP · 共 '+totalChips+' 只 · 点击看个股';
+  // 事件委托: 折叠切换 + 个股点击
+  $id('st-stocks').addEventListener('click',e=>{
+    const head=e.target.closest('.stgrp-head');
+    if(head){const body=head.parentElement.querySelector('.stgrp-body');const open=body.style.display!=='none';
+      body.style.display=open?'none':'block';head.querySelector('span:last-child').textContent=open?'▸':'▾';return;}
+    const chip=e.target.closest('[data-code]');
+    if(chip)window._openStock(chip.dataset.code);
+  });
 })();
 
 /* ── 通用横向条形 ── */
