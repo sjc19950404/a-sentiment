@@ -368,7 +368,8 @@ textarea:focus{outline:none;border-color:#33415c}
     <div id="s4-detail" style="margin-top:10px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:11px 14px"></div>
   </section>
 
-  <section data-modtip="<b>帮你盯股票</b>：把关注的股票加进来，它们一上龙虎榜、沾上热门题材或有资金异动，这里就会提示你。"><h2>S5 · 自选股情绪哨兵 <span class="note">盯住你的票在龙虎榜/题材榜的动静 · 本机存储</span></h2>
+  <section data-modtip="<b>帮你盯股票</b>：把关注的股票加进来，它们一上龙虎榜、沾上热门题材或有资金异动，这里就会提示你。顶部「大盘哨兵」先看市场整体位置：五状态标签、炸板率、净买、趋势与仓位依据。"><h2>S5 · 自选股情绪哨兵 <span class="note">大盘位置 + 个股动静 · 本机存储</span></h2>
+    <div id="s5-market" style="margin-bottom:14px"></div>
     <div class="lab-ctrl">
       <input id="s5-input" list="s5-dl" placeholder="输入代码或名称，如 000498 / 山东路桥" style="flex:1;min-width:200px;background:#0e1320;color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:8px 11px;font-size:13px">
       <datalist id="s5-dl"></datalist>
@@ -626,6 +627,8 @@ document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
   h+='<div class="sec-desc" style="margin-top:8px">单日值不重要，连续 3 天的方向才重要；判定规则见下方表格。以上为统计口径的方法演示，不构成投资建议。</div>';
   $id('state-card').innerHTML=h;
   $id('state-note').textContent='五状态自动判定 · '+DAYS.length+' 个交易日存档';
+  /* v4.9.14: 暴露判定结果给实验室 S5 大盘哨兵（lab-s5.js 在主脚本之后执行） */
+  window.__mktState={st,name,col,play,warns,d3};
 })();
 
 /* ── Tab6 内嵌《实战使用指南》（v4.9.12）：iframe 懒加载同源 guide.html ── */
