@@ -117,6 +117,92 @@
     </svg>`;
   }
 
+  // ── v4.9.8 实时快照（腾讯行情 JSONP · 与 rt 条同源）──
+  function qtQuote(code) {
+    return new Promise((resolve, reject) => {
+      if (location.protocol === 'file:') return reject(new Error('file:// 环境不可用'));
+      const m = /^(sh|sz|bj)?(\d{6})$/.exec(String(code)) || [];
+      if (!m[2]) return reject(new Error('代码格式无法识别: ' + code));
+      const market = m[1] || (m[2][0] === '6' ? 'sh' : 'sz');   // 兼容 sh600519 / 600519 两种入参
+      const vname = 'v_' + market + m[2];
+      const s = document.createElement('script');
+      const fail = e => { clearTimeout(t); delete window[vname]; s.remove(); reject(e); };
+      const t = setTimeout(() => fail(new Error('timeout')), 8000);
+      s.onload = () => {
+        clearTimeout(t);
+        const raw = window[vname]; s.remove(); delete window[vname];
+        if (!raw || typeof raw !== 'string') return reject(new Error('空响应'));
+        const f = raw.split('~');
+        const num = i => { const v = parseFloat(f[i]); return isFinite(v) ? v : null; };
+        const q = {
+          name: f[1] || '', price: num(3), prevClose: num(4), open: num(5),
+          time: f[30] || '', chg: num(31), chgPct: num(32), high: num(33), low: num(34),
+          amountWan: num(37), turnover: num(38), pe: num(39), amp: num(43),
+          floatCap: num(44), cap: num(45), pb: num(46), zt: num(47), dt: num(48), volRatio: num(49)
+        };
+        q.price != null ? resolve(q) : reject(new Error('字段缺失'));
+      };
+      s.onerror = () => fail(new Error('加载失败'));
+      s.src = 'https://qt.gtimg.cn/q=' + market + m[2];
+      document.head.appendChild(s);
+    });
+  }
+  const qtHTML = q => {
+    const up = '#ff5a5a', dn = '#2fbf8f', cc = v => v >= 0 ? up : dn;
+    const f2 = v => v == null ? '—' : v.toFixed(2), f0 = v => v == null ? '—' : v.toFixed(0);
+    const cell = (k, v, color) => `<div style="padding:5px 10px;border-right:1px solid #1c2434;border-bottom:1px solid #1c2434"><div style="font-size:10.5px;color:#5a6a80">${k}</div><div class="num" style="font-size:13px;font-weight:700;${color ? 'color:' + color : ''}">${v}</div></div>`;
+    const tstr = (q.time || '').replace(/^(\d{8})(\d{2})(\d{2})(\d{2}).*$/, '$2:$3:$4');
+    return `<div style="display:grid;grid-template-columns:repeat(5,1fr);border:1px solid #1c2434;border-radius:8px;overflow:hidden;font-size:12px">
+      ${cell('现价 ' + tstr, f2(q.price), q.chgPct >= 0 ? up : dn)}
+      ${cell('涨跌幅', (q.chgPct >= 0 ? '+' : '') + f2(q.chgPct) + '%', cc(q.chgPct))}
+      ${cell('今开 / 昨收', f2(q.open) + ' / ' + f2(q.prevClose))}
+      ${cell('最高 / 最低', f2(q.high) + ' / ' + f2(q.low))}
+      ${cell('振幅', f2(q.amp) + '%')}
+      ${cell('成交额', q.amountWan == null ? '—' : (q.amountWan / 10000).toFixed(2) + ' 亿')}
+      ${cell('换手率', f2(q.turnover) + '%')}
+      ${cell('量比', f2(q.volRatio))}
+      ${cell('PE(TTM) / PB', f2(q.pe) + ' / ' + f2(q.pb))}
+      ${cell('总市值(亿)', f0(q.cap))}
+      ${cell('涨停价', f2(q.zt), up)}
+      ${cell('跌停价', f2(q.dt), dn)}
+      ${cell('流通市值(亿)', f0(q.floatCap))}
+      ${cell('数据源', '腾讯行情 · 实时')}
+    </div>`;
+  };
+
+  // ── v4.9.8 技术统计（本地 K 线计算 · 零网络）──
+  function kstatHTML(bars) {
+    const closes = bars.map(b => b[2]), c = closes[closes.length - 1], n = closes.length;
+    const ret = k => { const i = n - 1 - k; return i >= 0 ? (c / closes[i] - 1) * 100 : null; };
+    const ma = k => { if (n < k) return null; let s = 0; for (let i = n - k; i < n; i++) s += closes[i]; return s / k; };
+    const r5 = ret(5), r20 = ret(20), r60 = ret(60);
+    const span = Math.min(60, n);
+    const hi60 = Math.max.apply(null, bars.slice(-span).map(b => b[3]));
+    const lo60 = Math.min.apply(null, bars.slice(-span).map(b => b[4]));
+    const hiAll = Math.max.apply(null, bars.map(b => b[3])), loAll = Math.min.apply(null, bars.map(b => b[4]));
+    const pos = (c - loAll) / ((hiAll - loAll) || 1) * 100;
+    const avgV = (a, b) => { let s = 0, cnt = 0; for (let i = Math.max(0, a); i < Math.min(n, b); i++) { s += bars[i][5]; cnt++; } return cnt ? s / cnt : 0; };
+    const v5 = avgV(n - 5, n), v20 = avgV(n - 20, n - 5);
+    const vr = v20 ? v5 / v20 : null;
+    const up = '#ff5a5a', dn = '#2fbf8f';
+    const chip = (k, v, color) => `<div style="padding:5px 10px;border-right:1px solid #1c2434;border-bottom:1px solid #1c2434"><div style="font-size:10.5px;color:#5a6a80">${k}</div><div class="num" style="font-size:13px;font-weight:700;${color ? 'color:' + color : ''}">${v}</div></div>`;
+    const pctTxt = v => v == null ? '—' : (v >= 0 ? '+' : '') + v.toFixed(2) + '%';
+    const f2v = v => v.toFixed(2);
+    const maTxt = k => { const m = ma(k); return m == null ? '—' : f2v(m) + (c >= m ? ' ▲上方' : ' ▼下方'); };
+    return `<div style="display:grid;grid-template-columns:repeat(5,1fr);border:1px solid #1c2434;border-radius:8px;overflow:hidden;font-size:12px;margin-top:10px">
+      ${chip('近5日', pctTxt(r5), r5 >= 0 ? up : dn)}
+      ${chip('近20日', pctTxt(r20), r20 >= 0 ? up : dn)}
+      ${chip('近60日', pctTxt(r60), r60 >= 0 ? up : dn)}
+      ${chip('MA5', maTxt(5), ma(5) != null && c >= ma(5) ? up : dn)}
+      ${chip('MA10', maTxt(10), ma(10) != null && c >= ma(10) ? up : dn)}
+      ${chip('MA20', maTxt(20), ma(20) != null && c >= ma(20) ? up : dn)}
+      ${chip('60日高/低', f2v(hi60) + ' / ' + f2v(lo60))}
+      ${chip('距60日高点', ((c / hi60 - 1) * 100).toFixed(2) + '%', c / hi60 - 1 >= -0.03 ? up : '')}
+      ${chip('量能 5日/20日', vr == null ? '—' : vr.toFixed(2) + ' 倍' + (vr >= 1.2 ? ' 放量' : vr <= 0.8 ? ' 缩量' : ''), vr >= 1.2 ? up : vr <= 0.8 ? dn : '')}
+      ${chip('全档区间分位', pos.toFixed(0) + '%')}
+    </div>`;
+  }
+
   // ── 任意A股K线弹窗 ──
   window._openKline = async function (code, nameHint) {
     let mask = document.getElementById('kmodal-mask');
@@ -135,19 +221,30 @@
       const v = await getShard(code);
       const name = nameHint || v.n || '';
       let cur = 60;
+      let qtHtml = null, qtDone = false;
+      const note = `<div style="margin-top:10px;font-size:11px;color:var(--faint);line-height:1.7">ℹ 该股存档期内（近 31 个交易日）未上龙虎榜、未进入同花顺强势股，故无档案类内容（上榜历史/题材归因仅覆盖存档个股）。此处提供实时快照 + 本地K线技术统计作为补充；若该股日后上榜，将自动获得完整档案。</div>`;
       const render = () => {
         const bars = v.bars, last = bars[bars.length - 1], prev = bars.length > 1 ? bars[bars.length - 2] : null;
         const chg = prev ? (last[2] / prev[2] - 1) * 100 : null;
+        const qtSec = qtHtml == null
+          ? `<div class="dim" id="km-qtw" style="padding:6px 0;font-size:12px">${qtDone ? '实时快照不可达（网络受限或离线，不影响K线与技术统计）' : '实时快照拉取中（腾讯行情）…'}</div>`
+          : qtHtml;
         show(`<div class="km-head"><b>${esc(name || code)}</b><span class="c num">${esc(code)}</span>
           <span style="font-size:17px;font-weight:700">${last[2].toFixed(2)}</span>
           ${chg != null ? `<span style="color:${chg >= 0 ? '#ff5a5a' : '#2fbf8f'};font-weight:700">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</span>` : ''}
           <div class="km-rng" style="margin-left:auto">${[60, 120, 250].map(r => `<button class="${r === cur ? 'on' : ''}" data-r="${r}">${r}日</button>`).join('')}</div>
           <span class="km-close" ${closeBtn}>✕</span></div>
           ${candleSVG(bars, cur)}
+          ${kstatHTML(bars)}
+          <div style="margin-top:12px;font-size:12px;font-weight:700;color:#c6cfdd">实时快照</div>
+          ${qtSec}
+          ${note}
           <div class="km-meta"><span>📅 ${bars.length} 根 · ${bars[0][0]} ~ ${last[0]}</span><span>💾 IndexedDB 当日缓存</span><span>腾讯前复权日K · 仓库分片</span></div>`);
         box.querySelectorAll('.km-rng button').forEach(b => { b.onclick = () => { cur = +b.dataset.r; render(); }; });
       };
       render();
+      qtQuote(code).then(q => { qtHtml = qtHTML(q); const w = box.querySelector('#km-qtw'); if (w) w.outerHTML = qtHtml; })
+        .catch(() => { qtDone = true; const w = box.querySelector('#km-qtw'); if (w) w.textContent = '实时快照不可达（网络受限或离线，不影响K线与技术统计）'; });
     } catch (e) {
       show(`<div class="km-head"><b>${esc(nameHint || code)}</b><span class="km-close" ${closeBtn}>✕</span></div><div class="dim" style="padding:36px 0;text-align:center">K线分片不可达（${esc(e.message)}）——离线模式或该代码无数据</div>`);
     }
