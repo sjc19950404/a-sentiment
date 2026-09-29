@@ -65,7 +65,11 @@
       g.appendChild(el('title', {}, `${n.tag}\n近${RN}日 ${n.recent} 只次 · 近5日 ${n.last5} 只\n动量 ${n.momentum > 0 ? '+' : ''}${n.momentum}（${n.momentum > 0 ? '升温' : n.momentum < 0 ? '降温' : '持平'}）\n点击查看族谱详情`));
       g.onclick = () => { detail(n.tag); draw(n.tag); };
       svg.appendChild(g);
-      svg.appendChild(el('text', { x: n.x, y: n.y + 4, fill: '#d7dee9', 'font-size': 10.5, 'font-weight': '700', 'text-anchor': 'middle', class: 'pickable', onclick: () => { detail(n.tag); draw(n.tag); } }, n.tag.length > 5 ? n.tag.slice(0, 5) : n.tag));
+      const tl = el('text', { x: n.x, y: n.y + 4, fill: '#d7dee9', 'font-size': 10.5, 'font-weight': '700', 'text-anchor': 'middle', class: 'pickable' }, n.tag.length > 5 ? n.tag.slice(0, 5) : n.tag);
+      // v4.9.7: onclick 不能走 el() attrs（setAttribute 会把函数转成字符串变无效内联处理器，
+      // 标签叠在圆心上吞掉点击 → 用户点节点中心无响应）; 必须属性赋值
+      tl.onclick = () => { detail(n.tag); draw(n.tag); };
+      svg.appendChild(tl);
       // 动量角标
       svg.appendChild(el('text', { x: n.x + n.r + 5, y: n.y - n.r + 2, fill: momC, 'font-size': 10, 'font-weight': '700' }, n.momentum > 0 ? '▲' : n.momentum < 0 ? '▼' : '▶'));
     });

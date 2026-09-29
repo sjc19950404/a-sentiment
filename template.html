@@ -443,7 +443,7 @@ const DAYS = D.all_days.slice().sort((a,b)=>a.trade_date<b.trade_date?-1:1);
 const CUR = DAYS[DAYS.length-1];
 const NS='http://www.w3.org/2000/svg';
 const UP='#ff5a5a',DOWN='#2fbf8f',DIM='#8a94a6',FAINT='#5a6478',LINE='#212a3a',GOLD='#e8b04b';
-function el(t,a,x){const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);if(x!=null)e.textContent=x;return e;}
+function el(t,a,x){const e=document.createElementNS(NS,t);for(const k in a){if(k.slice(0,2)==='on'&&typeof a[k]==='function')e[k]=a[k];else e.setAttribute(k,a[k]);}if(x!=null)e.textContent=x;return e;}
 function fmtW(w){const a=Math.abs(w);if(a>=10000)return (w/10000).toFixed(2)+'亿';if(a>=1)return Math.round(w).toLocaleString()+'万';return w.toFixed(1)+'万';}
 function cls(v){return v>0?'up':(v<0?'down':'');}
 /* 全局 HTML 转义（v4.8.6）：供 _openTopic 等全局函数使用；局部 IIFE 内的同名副本仍各自遮蔽 */
