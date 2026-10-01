@@ -63,16 +63,22 @@
     } catch (e) { return null; }
   }
   async function fetchBreadth() {
+    // v4.9.17: 沪深双 secid 相加——旧版只查 1.000001（沪市单市, 9/30 实锤显示 1223/1065, 全市场应为 2567/2824）
     const candidates = [
-      'https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&secids=1.000001&fields=f104,f105,f106',
-      'https://push2.eastmoney.com/api/qt/stock/get?secid=1.000001&fields=f104,f105,f106'
+      'https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&secids=1.000001,0.399001&fields=f104,f105,f106'
     ];
     for (const u of candidates) {
       try {
         const d = await jsonp(u, 'cb');
-        let dd = (d && d.data) || null;
-        if (dd && dd.diff) dd = Array.isArray(dd.diff) ? dd.diff[0] : dd.diff;
-        if (dd && dd.f104 != null && (dd.f104 + dd.f105) > 0) return { up: dd.f104, down: dd.f105 };
+        const arr = d && d.data && Array.isArray(d.data.diff) ? d.data.diff : null;
+        if (arr && arr.length >= 2) {
+          let up = 0, down = 0, ok = true;
+          for (const it of arr) {
+            if (it.f104 == null || it.f105 == null || (it.f104 + it.f105) <= 0) { ok = false; break; }
+            up += it.f104; down += it.f105;
+          }
+          if (ok) return { up: Math.round(up), down: Math.round(down) };
+        }
       } catch (e) { /* 换下一个候选 */ }
     }
     return null;

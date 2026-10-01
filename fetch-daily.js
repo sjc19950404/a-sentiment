@@ -318,10 +318,10 @@ async function fetchYztMap() {
 
 // ── 源6: 同花顺大盘日K → 两市成交额 Map（YYYYMMDD → 亿; 拉 2025+2026 两年防跨年 MA20 缺口）──
 async function fetchAmountMap() {
-  const map = {};
+  const map = {}, mapSh = {}, mapSz = {};
   const years = [2025, 2026];
   const okParts = [];
-  for (const code of ['zs_1A0001', 'zs_399001']) {   // c[6]=单市成交额(元)——两市总额必须沪深两段相加
+  for (const [code, dst] of [['zs_1A0001', mapSh], ['zs_399001', mapSz]]) {   // c[6]=单市成交额(元)——两市总额必须沪深两段相加
     for (const year of years) {
       try {
         const obj = await withRetry(async () => {
@@ -332,7 +332,7 @@ async function fetchAmountMap() {
         }, 3, 1000);
         (obj.data || '').split(';').filter(Boolean).forEach(l => {
           const c = l.split(',');
-          if (c.length >= 7 && +c[6] > 0) map[c[0]] = (map[c[0]] || 0) + (+c[6]) / 1e8; // 元 → 亿
+          if (c.length >= 7 && +c[6] > 0) dst[c[0]] = (dst[c[0]] || 0) + (+c[6]) / 1e8; // 元 → 亿
         });
         okParts.push(code + '/' + year);
       } catch (e) { console.error('  成交额年K失败: ' + code + '/' + year + ' — ' + e.message); }
@@ -342,7 +342,30 @@ async function fetchAmountMap() {
   // v4.9: 缺段拒绝入库——单市口径会腰斩两市总额（2026-09-28 实锤: 深成指年K瞬断被静默吞 → 全 Map 腰斩,
   // 9/28 额 17028→8045 亿、s_amt 虚高）, 宁可管道失败告警也不入错数
   if (okParts.length < 4) { console.error('FATAL: 成交额年K缺段（仅 ' + okParts.join(',') + '）——单市口径会腰斩总额, 拒绝入库'); return null; }
-  if (!Object.keys(map).length) return null;
+  if (!Object.keys(mapSh).length) return null;
+  // v4.9.17: 分市对账——同花顺深成年K文件当日行经常晚于上证数小时才出（2026-09-29/09-30 实锤:
+  // 18:30 管道抓时只有沪段 → 9/29 额 6617(应为 14092)、9/30 6794(应为 14380), 全部腰斩入档）。
+  // 对最近 5 个交易日逐日校验两段齐全; 最新一日缺段用腾讯指数 f37 代理补全（沪深合计, 与年K同口径）,
+  // 更早历史日缺段说明源文件残缺 → FATAL 拒绝入库（防再犯）。
+  const dates = Object.keys(mapSh).sort();
+  const recent = dates.slice(-5);
+  const broken = recent.filter(d => !mapSz[d]);
+  if (broken.length) {
+    console.log('⚠ 深市段缺日: ' + broken.join(',') + '（同花顺深成年K晚出）');
+    const lastBroken = broken[broken.length - 1];
+    const isLatest = lastBroken === dates[dates.length - 1];
+    const proxy = isLatest ? await fetchIdxAmount() : null;
+    if (proxy != null) {
+      mapSz[lastBroken] = proxy - mapSh[lastBroken]; // 代理=两市合计 → 反推深市段
+      if (mapSz[lastBroken] <= 0) { console.error('FATAL: 腾讯代理反推深市段异常（' + mapSz[lastBroken] + '）, 拒绝入库'); return null; }
+      console.log('  最新交易日 ' + lastBroken + ' 深市段 → 腾讯指数代理补全（两市 ' + r1(proxy) + ' 亿 = 沪 ' + r1(mapSh[lastBroken]) + ' + 深 ' + r1(mapSz[lastBroken]) + '）');
+      broken.splice(broken.indexOf(lastBroken), 1);
+    }
+    if (broken.length) { console.error('FATAL: 历史日深市段缺失且无法代理（' + broken.join(',') + '）——单市口径会腰斩总额, 拒绝入库'); return null; }
+  }
+  for (const d of new Set([...Object.keys(mapSh), ...Object.keys(mapSz)])) {
+    if (mapSh[d] != null && mapSz[d] != null) map[d] = mapSh[d] + mapSz[d];
+  }
   return map;
 }
 
@@ -672,7 +695,8 @@ function appendStocks(D, day) {
 
 // ── v4.5 回填: 存档全部历史日补池/额/赚钱效应/高位亏钱效应/两融并全档重算（幂等可重跑; 也可用于补洞）──
 async function backfill() {
-  console.log('═ v4.5 回填: 历史日涨跌停/炸板/成交额/赚钱效应/高位亏钱效应/梯队分布/炸板金额/两融 + 全档重算 ═');
+  const FROM = (args.find(a => a.startsWith('--from=')) || '').split('=')[1] || null; // v4.9.17: 只重建 >= from 的日期（老存档原值保留, 防池超深度被清）
+  console.log('═ v4.5 回填: 历史日涨跌停/炸板/成交额/赚钱效应/高位亏钱效应/梯队分布/炸板金额/两融 + 全档重算 ═' + (FROM ? '（--from=' + FROM + ' 仅重建该日起）' : ''));
   const D = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
   const amountMap = await fetchAmountMap();
   if (!amountMap) { console.error('成交额 Map 拉取失败, 中止'); process.exit(1); }
@@ -684,6 +708,11 @@ async function backfill() {
   let filled = 0, missPool = 0, missAmt = 0, hasCodes = 0, hasHs = 0;
   let prevCodes = null, prevLb = null;
   for (const day of D.all_days) {
+    if (FROM && day.trade_date < FROM) { // v4.9.17: --from 之前的日子保留原值, 但维护 prev 链（断板/高位股统计依赖相邻日）
+      prevCodes = (day.summary && day.summary.zt_codes) || prevCodes;
+      prevLb = (day.summary && day.summary.zt_lb) || prevLb;
+      continue;
+    }
     const ymd = day.trade_date.replace(/-/g, '');
     const pools = await fetchPools(day.trade_date);
     const amountYi = amountMap[ymd] || null;
